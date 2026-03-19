@@ -1430,6 +1430,13 @@ async function editEmployee(id) {
   const emp = list.find(e => e.id === id);
   if (!emp) return;
 
+  // Need full data including system_prompt — fetch individually
+  let fullEmp = emp;
+  try {
+    const detailRes = await fetch(`/api/employees/${id}`);
+    if (detailRes.ok) fullEmp = await detailRes.json();
+  } catch(e) { /* fallback to list data */ }
+
   showModal(`
     <h3 style="color:var(--text-primary); margin-bottom:20px;">✏️ Edit: ${emp.name}</h3>
     <div style="display:flex; flex-direction:column; gap:14px;">
@@ -1439,6 +1446,10 @@ async function editEmployee(id) {
         <input id="editEmpAvatar" value="${emp.avatar || '🤖'}" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
       <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Description</label>
         <textarea id="editEmpDesc" rows="2" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px; resize:vertical;">${emp.description || ''}</textarea></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">System Prompt</label>
+        <textarea id="editEmpPrompt" rows="4" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px; resize:vertical;" placeholder="You are a helpful assistant for...">${fullEmp.system_prompt || ''}</textarea></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Model (optional)</label>
+        <input id="editEmpModel" value="${fullEmp.model || ''}" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;" placeholder="e.g. anthropic/claude-sonnet-4"></div>
       <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
         <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Cancel</button>
         <button onclick="saveEmployee('${id}')" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">Save</button>
@@ -1454,9 +1465,11 @@ async function saveEmployee(id) {
       name: document.getElementById('editEmpName').value,
       avatar: document.getElementById('editEmpAvatar').value,
       description: document.getElementById('editEmpDesc').value,
+      system_prompt: document.getElementById('editEmpPrompt').value,
+      model: document.getElementById('editEmpModel').value || null,
     }),
   });
-  closeModal(); loadEmployees();
+  closeModal(); loadEmployees(); loadEmployeeSelector();
 }
 
 async function toggleEmployee(id, isActive) {

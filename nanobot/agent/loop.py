@@ -184,12 +184,14 @@ class AgentLoop:
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
+        model_override: str | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop."""
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        active_model = model_override or self.model
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -199,7 +201,7 @@ class AgentLoop:
             response = await self.provider.chat_with_retry(
                 messages=messages,
                 tools=tool_defs,
-                model=self.model,
+                model=active_model,
             )
 
             if response.has_tool_calls:
@@ -418,13 +420,35 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        # --- Employee-aware dispatch ---
+        employee_meta = msg.metadata or {}
+        employee_id = employee_meta.get("employee_id")
+        employee_system_prompt = employee_meta.get("system_prompt")
+        employee_model = employee_meta.get("model")
+        employee_name = employee_meta.get("employee_name", "")
+
         history = session.get_history(max_messages=0)
-        initial_messages = self.context.build_messages(
-            history=history,
-            current_message=msg.content,
-            media=msg.media if msg.media else None,
-            channel=msg.channel, chat_id=msg.chat_id,
-        )
+
+        # Build messages — if employee has custom system_prompt, inject it
+        if employee_system_prompt:
+            # Build base messages
+            initial_messages = self.context.build_messages(
+                history=history,
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                channel=msg.channel, chat_id=msg.chat_id,
+            )
+            # Prepend employee persona to system prompt
+            persona_block = f"\n\n---\n\n# Employee Persona: {employee_name}\n\n{employee_system_prompt}"
+            if initial_messages and initial_messages[0].get("role") == "system":
+                initial_messages[0]["content"] += persona_block
+        else:
+            initial_messages = self.context.build_messages(
+                history=history,
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                channel=msg.channel, chat_id=msg.chat_id,
+            )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
@@ -435,7 +459,9 @@ class AgentLoop:
             ))
 
         final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+            initial_messages,
+            on_progress=on_progress or _bus_progress,
+            model_override=employee_model if employee_model else None,
         )
 
         if final_content is None:
@@ -444,6 +470,10 @@ class AgentLoop:
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
         self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
+
+        # Update employee token stats in the background
+        if employee_id:
+            self._schedule_background(self._update_employee_stats(employee_id, final_content))
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
@@ -454,6 +484,24 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
             metadata=msg.metadata or {},
         )
+
+    async def _update_employee_stats(self, employee_id: int, response_content: str) -> None:
+        """Update employee token usage in the database."""
+        try:
+            from nanobot.db.engine import get_db
+            from nanobot.db.models import Employee
+            from sqlalchemy import select
+
+            # Rough token estimation: ~4 chars per token
+            est_tokens = len(response_content or "") // 4
+
+            async with get_db() as db:
+                result = await db.execute(select(Employee).where(Employee.id == employee_id))
+                emp = result.scalar_one_or_none()
+                if emp:
+                    emp.total_tokens = (emp.total_tokens or 0) + est_tokens
+        except Exception as e:
+            logger.warning("Failed to update employee stats: {}", e)
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""

@@ -577,10 +577,34 @@ async def api_employees_list(request: Request) -> JSONResponse:
 
     return JSONResponse([{
         "id": e.id, "name": e.name, "slug": e.slug, "avatar": e.avatar,
-        "description": e.description, "model": e.model, "is_active": e.is_active,
+        "description": e.description, "system_prompt": e.system_prompt,
+        "model": e.model, "is_active": e.is_active,
         "tools": e.tools, "skills": e.skills, "channels": e.channels,
         "total_tokens": e.total_tokens, "total_messages": e.total_messages,
     } for e in employees])
+
+
+async def api_employees_detail(request: Request) -> JSONResponse:
+    """Get a single digital employee detail."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee
+    from sqlalchemy import select
+
+    emp_id = request.path_params["id"]
+    async with get_db() as db:
+        result = await db.execute(select(Employee).where(Employee.id == emp_id))
+        e = result.scalar_one_or_none()
+        if not e:
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+    return JSONResponse({
+        "id": e.id, "name": e.name, "slug": e.slug, "avatar": e.avatar,
+        "description": e.description, "system_prompt": e.system_prompt,
+        "model": e.model, "provider": e.provider, "is_active": e.is_active,
+        "temperature": e.temperature, "max_tokens": e.max_tokens,
+        "tools": e.tools, "skills": e.skills, "channels": e.channels,
+        "total_tokens": e.total_tokens, "total_messages": e.total_messages,
+    })
 
 
 async def api_employees_create(request: Request) -> JSONResponse:
@@ -917,6 +941,7 @@ def create_app(
         # Employee (Digital Worker) API
         Route("/api/employees", api_employees_list, methods=["GET"]),
         Route("/api/employees", api_employees_create, methods=["POST"]),
+        Route("/api/employees/{id}", api_employees_detail, methods=["GET"]),
         Route("/api/employees/{id}", api_employees_update, methods=["PUT", "PATCH"]),
         Route("/api/employees/{id}", api_employees_delete, methods=["DELETE"]),
         # Users API (admin)
