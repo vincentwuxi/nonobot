@@ -54,7 +54,22 @@ Based on nanobot v0.1.4.post5, this release transforms the personal AI assistant
 - **KB Document Search** — `GET /api/knowledge-bases/{id}/search?q=` keyword search with line-level snippets
 - **Search Preview UI** — 🔍 Search section in KB detail modal with real-time results display
 
-### API Endpoints (27 total)
+### Wave 8 — Quick Wins & Dashboard Enhancement
+- **Chat Feedback** — 👍👎 buttons on assistant messages → `ChatFeedback` model + `POST /api/feedback`
+- **Dashboard KB Stats** — 📚 Knowledge Bases count + 👍 Satisfaction % cards
+- **Employee KB Badges** — Employee cards display 📚 KB binding count
+- **Employee Templates** — 5 pre-built role templates (HR, IT, Customer Service, Analyst, Writer)
+- **Conversation Export** — 📥 Download current conversation as Markdown file
+
+### Wave 9 — Task Execution Engine
+- **EmployeeTask Model** — Task with title, description, status, priority, schedule, result, token_cost
+- **Task CRUD API** — Create, read, update, delete tasks with employee assignment
+- **Task Execution** — `POST /api/tasks/{id}/execute` runs task through assigned employee's agent
+- **Background Runner** — Async agent execution with status tracking (pending → running → completed/failed)
+- **Tasks Panel** — Sidebar entry + full management UI with status badges, priority colors
+- **Task Detail Modal** — View task result, ⚡ Execute, 🗑 Delete actions
+
+### API Endpoints (32 total)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -63,6 +78,7 @@ Based on nanobot v0.1.4.post5, this release transforms the personal AI assistant
 | `/api/auth/me` | GET | Current user |
 | `/api/auth/change-password` | POST | Password change |
 | `/api/stats` | GET | Dashboard statistics |
+| `/api/feedback` | POST | Chat feedback (👍👎) |
 | `/api/settings` | GET | System settings |
 | `/api/employees` | GET/POST | Employee list/create |
 | `/api/employees/{id}` | GET/PUT/DELETE | Employee CRUD |
@@ -72,6 +88,9 @@ Based on nanobot v0.1.4.post5, this release transforms the personal AI assistant
 | `/api/audit` | GET | Audit logs (sanitized) |
 | `/api/quota` | GET | Quota usage check |
 | `/api/chat-sessions` | GET/POST | Session persistence |
+| `/api/tasks` | GET/POST | Task list/create |
+| `/api/tasks/{id}` | GET/PUT/DELETE | Task CRUD |
+| `/api/tasks/{id}/execute` | POST | Execute task via agent |
 | `/api/keys` | GET/POST | API key list/create |
 | `/api/keys/{id}/revoke` | POST | Revoke API key |
 | `/api/knowledge-bases` | GET/POST | KB list/create |

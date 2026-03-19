@@ -42,6 +42,10 @@
 | 🧠 **Employee Memory** | Per-employee persistent memory with GUI editor |
 | 📚 **Knowledge Bases** | Document upload, chunked storage, keyword search |
 | 🔗 **KB Integration** | Bind knowledge bases to employees for context injection |
+| 👍 Chat Feedback | Thumbs up/down on responses, satisfaction tracking |
+| 📋 Task Engine | Task CRUD, employee assignment, priority, agent execution |
+| 🎯 Employee Templates | 5 pre-built roles (HR, IT, CS, Analyst, Writer) |
+| 📥 Conversation Export | Download chat as Markdown |
 
 ### 🚀 Quick Start (Enterprise Mode)
 
@@ -62,7 +66,7 @@ nanobot gateway
 
 ### 📖 API Reference
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full list of 27 API endpoints.
+See [CHANGELOG.md](./CHANGELOG.md) for the full list of 32 API endpoints.
 
 ---
 
