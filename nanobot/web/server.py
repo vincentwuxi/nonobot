@@ -1191,6 +1191,252 @@ async def api_keys_revoke(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Knowledge Base Management
+# ---------------------------------------------------------------------------
+
+async def kb_list(request: Request) -> JSONResponse:
+    """List all knowledge bases."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeBase
+    from sqlalchemy import select
+
+    async with get_db() as db:
+        result = await db.execute(select(KnowledgeBase).order_by(KnowledgeBase.created_at.desc()))
+        kbs = result.scalars().all()
+
+    return JSONResponse([{
+        "id": kb.id, "name": kb.name, "description": kb.description,
+        "kb_type": kb.kb_type, "is_active": kb.is_active,
+        "stats": kb.stats, "created_at": kb.created_at.isoformat() if kb.created_at else None,
+    } for kb in kbs])
+
+
+async def kb_create(request: Request) -> JSONResponse:
+    """Create a new knowledge base."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeBase, AuditLog
+
+    user = getattr(request.state, "user", {})
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    name = body.get("name", "").strip()
+    if not name:
+        return JSONResponse({"error": "name required"}, status_code=400)
+
+    async with get_db() as db:
+        kb = KnowledgeBase(
+            name=name,
+            description=body.get("description", ""),
+            kb_type=body.get("kb_type", "file"),
+            created_by=user.get("sub"),
+            stats={"doc_count": 0, "total_chunks": 0, "total_size": 0},
+        )
+        db.add(kb)
+        db.add(AuditLog(
+            user_id=user.get("sub"), username=user.get("username"),
+            action="create_kb", resource_type="knowledge_base", resource_id=kb.id,
+        ))
+        await db.flush()
+        kb_id = kb.id
+
+    return JSONResponse({"ok": True, "id": kb_id})
+
+
+async def kb_get(request: Request) -> JSONResponse:
+    """Get a knowledge base with its documents."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeBase, KnowledgeDocument
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    kb_id = request.path_params["id"]
+
+    async with get_db() as db:
+        result = await db.execute(
+            select(KnowledgeBase).options(selectinload(KnowledgeBase.documents)).where(KnowledgeBase.id == kb_id)
+        )
+        kb = result.scalar_one_or_none()
+
+    if not kb:
+        return JSONResponse({"error": "knowledge base not found"}, status_code=404)
+
+    return JSONResponse({
+        "id": kb.id, "name": kb.name, "description": kb.description,
+        "kb_type": kb.kb_type, "is_active": kb.is_active, "stats": kb.stats,
+        "documents": [{
+            "id": doc.id, "filename": doc.filename, "file_size": doc.file_size,
+            "chunk_count": doc.chunk_count, "status": doc.status,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        } for doc in (kb.documents or [])],
+    })
+
+
+async def kb_delete(request: Request) -> JSONResponse:
+    """Delete a knowledge base and its documents."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeBase, AuditLog
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    kb_id = request.path_params["id"]
+
+    async with get_db() as db:
+        result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+        kb = result.scalar_one_or_none()
+        if not kb:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        await db.delete(kb)
+        db.add(AuditLog(
+            user_id=user.get("sub"), username=user.get("username"),
+            action="delete_kb", resource_type="knowledge_base", resource_id=kb_id,
+        ))
+
+    return JSONResponse({"ok": True})
+
+
+async def kb_upload_document(request: Request) -> JSONResponse:
+    """Upload a document to a knowledge base."""
+    import hashlib
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeBase, KnowledgeDocument, AuditLog
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    kb_id = request.path_params["id"]
+
+    async with get_db() as db:
+        result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+        kb = result.scalar_one_or_none()
+
+    if not kb:
+        return JSONResponse({"error": "knowledge base not found"}, status_code=404)
+
+    # Handle multipart form upload
+    form = await request.form()
+    uploaded = form.get("file")
+
+    if uploaded:
+        content_bytes = await uploaded.read()
+        filename = getattr(uploaded, "filename", "unnamed.txt") or "unnamed.txt"
+        content = content_bytes.decode("utf-8", errors="replace")
+    else:
+        # Fallback: JSON body with direct text
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "file or JSON body required"}, status_code=400)
+        content = body.get("content", "")
+        filename = body.get("filename", "untitled.md")
+
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    # Simple chunking: split by headings or double newlines
+    chunks = [c.strip() for c in content.split("\n\n") if c.strip()]
+    chunk_count = len(chunks)
+
+    async with get_db() as db:
+        doc = KnowledgeDocument(
+            kb_id=kb_id,
+            filename=filename,
+            content=content,
+            content_hash=content_hash,
+            file_size=len(content.encode("utf-8")),
+            chunk_count=chunk_count,
+            status="ready",
+        )
+        db.add(doc)
+
+        # Update KB stats
+        result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+        kb = result.scalar_one()
+        stats = dict(kb.stats or {})
+        stats["doc_count"] = stats.get("doc_count", 0) + 1
+        stats["total_chunks"] = stats.get("total_chunks", 0) + chunk_count
+        stats["total_size"] = stats.get("total_size", 0) + len(content.encode("utf-8"))
+        kb.stats = stats
+
+        db.add(AuditLog(
+            user_id=user.get("sub"), username=user.get("username"),
+            action="upload_document", resource_type="knowledge_base", resource_id=kb_id,
+            detail={"filename": filename, "size": len(content.encode("utf-8"))},
+        ))
+
+        await db.flush()
+        doc_id = doc.id
+
+    return JSONResponse({"ok": True, "document_id": doc_id, "filename": filename, "chunks": chunk_count})
+
+
+async def kb_delete_document(request: Request) -> JSONResponse:
+    """Delete a document from a knowledge base."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeBase, KnowledgeDocument, AuditLog
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    kb_id = request.path_params["id"]
+    doc_id = request.path_params["doc_id"]
+
+    async with get_db() as db:
+        result = await db.execute(
+            select(KnowledgeDocument).where(KnowledgeDocument.id == doc_id, KnowledgeDocument.kb_id == kb_id)
+        )
+        doc = result.scalar_one_or_none()
+        if not doc:
+            return JSONResponse({"error": "document not found"}, status_code=404)
+
+        # Update KB stats
+        result2 = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+        kb = result2.scalar_one_or_none()
+        if kb:
+            stats = dict(kb.stats or {})
+            stats["doc_count"] = max(0, stats.get("doc_count", 0) - 1)
+            stats["total_chunks"] = max(0, stats.get("total_chunks", 0) - doc.chunk_count)
+            stats["total_size"] = max(0, stats.get("total_size", 0) - doc.file_size)
+            kb.stats = stats
+
+        await db.delete(doc)
+        db.add(AuditLog(
+            user_id=user.get("sub"), username=user.get("username"),
+            action="delete_document", resource_type="knowledge_base", resource_id=kb_id,
+            detail={"doc_id": doc_id, "filename": doc.filename},
+        ))
+
+    return JSONResponse({"ok": True})
+
+
+async def kb_get_content(request: Request) -> JSONResponse:
+    """Get the concatenated content of all documents in a KB (for L1 injection)."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeBase, KnowledgeDocument
+    from sqlalchemy import select
+
+    kb_id = request.path_params["id"]
+
+    async with get_db() as db:
+        result = await db.execute(
+            select(KnowledgeDocument).where(KnowledgeDocument.kb_id == kb_id).order_by(KnowledgeDocument.created_at)
+        )
+        docs = result.scalars().all()
+
+    if not docs:
+        return JSONResponse({"content": "", "doc_count": 0})
+
+    parts = []
+    for doc in docs:
+        parts.append(f"## {doc.filename}\n\n{doc.content or ''}")
+
+    return JSONResponse({
+        "content": "\n\n---\n\n".join(parts),
+        "doc_count": len(docs),
+    })
+
+
+# ---------------------------------------------------------------------------
 # Employee Memory Management
 # ---------------------------------------------------------------------------
 
@@ -1575,6 +1821,14 @@ def create_app(
         Route("/api/employees/{id}/memory", api_employee_memory_get, methods=["GET"]),
         Route("/api/employees/{id}/memory", api_employee_memory_update, methods=["PUT"]),
         Route("/api/employees/{id}/memory", api_employee_memory_delete, methods=["DELETE"]),
+        # Knowledge Bases
+        Route("/api/knowledge-bases", kb_list, methods=["GET"]),
+        Route("/api/knowledge-bases", kb_create, methods=["POST"]),
+        Route("/api/knowledge-bases/{id}", kb_get, methods=["GET"]),
+        Route("/api/knowledge-bases/{id}", kb_delete, methods=["DELETE"]),
+        Route("/api/knowledge-bases/{id}/documents", kb_upload_document, methods=["POST"]),
+        Route("/api/knowledge-bases/{id}/documents/{doc_id}", kb_delete_document, methods=["DELETE"]),
+        Route("/api/knowledge-bases/{id}/content", kb_get_content, methods=["GET"]),
         # External API (v1) — authenticated via API key
         Route("/api/v1/chat", api_v1_chat, methods=["POST"]),
         Route("/api/v1/employees", api_v1_employees_list, methods=["GET"]),

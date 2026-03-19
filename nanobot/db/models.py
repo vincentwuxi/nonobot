@@ -180,3 +180,48 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+# ─────────────────────── Knowledge Base ───────────────────────
+
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_bases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kb_type: Mapped[str] = mapped_column(String(20), default="file")  # file, vector, api
+    org_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("organizations.id"), nullable=True
+    )
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    stats: Mapped[dict] = mapped_column(JSON, default=dict)  # {doc_count, total_chunks, total_size}
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    # relationships
+    documents: Mapped[list["KnowledgeDocument"]] = relationship(
+        back_populates="knowledge_base", cascade="all, delete-orphan"
+    )
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    kb_id: Mapped[str] = mapped_column(String(36), ForeignKey("knowledge_bases.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(300), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)  # full text content
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="ready")  # processing, ready, error
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # relationships
+    knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")

@@ -575,6 +575,9 @@ body {
       <div class="nav-item" data-panel="apikeys" onclick="switchPanel('apikeys')">
         <span class="icon">🔑</span><span>API Keys</span>
       </div>
+      <div class="nav-item" data-panel="knowledgebase" onclick="switchPanel('knowledgebase')">
+        <span class="icon">📚</span><span>Knowledge</span>
+      </div>
       <div class="nav-item" data-panel="config" onclick="switchPanel('config')">
         <span class="icon">⚙️</span><span>Config</span>
       </div>
@@ -746,6 +749,18 @@ body {
           <div id="settingsInfo" style="color:var(--text-secondary); font-size:13px;">Loading...</div>
         </div>
       </div>
+    </div>
+
+    <!-- Knowledge Base Panel -->
+    <div class="panel" id="panel-knowledgebase">
+      <div class="panel-header">
+        <h2>📚 Knowledge Bases</h2>
+        <span class="subtitle" id="kbCount">0 base(s)</span>
+        <div class="panel-actions">
+          <button class="btn-primary" onclick="showCreateKbModal()">+ New KB</button>
+        </div>
+      </div>
+      <div id="kbList" style="padding:20px;">Loading...</div>
     </div>
 
   </main>
@@ -971,7 +986,139 @@ function switchPanel(name) {
   if (name === 'users') loadUsers();
   if (name === 'audit') loadAudit();
   if (name === 'apikeys') loadApiKeys();
+  if (name === 'knowledgebase') loadKnowledgeBases();
   if (name === 'settings') loadSettings();
+}
+
+// ============== Knowledge Bases ==============
+async function loadKnowledgeBases() {
+  try {
+    const res = await fetch('/api/knowledge-bases');
+    const list = await res.json();
+    document.getElementById('kbCount').textContent = `${list.length} base(s)`;
+    const el = document.getElementById('kbList');
+    if (!list.length) {
+      el.innerHTML = '<div style="color:var(--text-muted); padding:40px; text-align:center;">No knowledge bases yet. Click "+ New KB" to create one.</div>';
+      return;
+    }
+    el.innerHTML = '<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px;">' + list.map(kb => {
+      const s = kb.stats || {};
+      const sizeKB = ((s.total_size || 0) / 1024).toFixed(1);
+      return `
+        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:20px; cursor:pointer;" onclick="viewKb('${kb.id}')">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+            <div style="font-weight:600; color:var(--text-primary); font-size:15px;">📚 ${kb.name}</div>
+            <span style="padding:3px 10px; border-radius:12px; font-size:11px; background:rgba(147,130,255,0.15); color:var(--accent);">${kb.kb_type}</span>
+          </div>
+          <div style="color:var(--text-muted); font-size:12px; margin-bottom:12px;">${kb.description || 'No description'}</div>
+          <div style="display:flex; gap:12px; font-size:11px; color:var(--text-secondary);">
+            <span>📄 ${s.doc_count || 0} docs</span>
+            <span>🧩 ${s.total_chunks || 0} chunks</span>
+            <span>💾 ${sizeKB} KB</span>
+          </div>
+        </div>`;
+    }).join('') + '</div>';
+  } catch(e) { console.error('loadKnowledgeBases:', e); }
+}
+
+function showCreateKbModal() {
+  showModal(`
+    <h3 style="color:var(--text-primary); margin-bottom:20px;">📚 New Knowledge Base</h3>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Name *</label>
+        <input id="kbName" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;" placeholder="e.g. Customer FAQ"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Description</label>
+        <textarea id="kbDesc" rows="3" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;" placeholder="What this knowledge base is about"></textarea></div>
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Cancel</button>
+        <button onclick="createKb()" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">Create</button>
+      </div>
+    </div>
+  `);
+}
+
+async function createKb() {
+  const name = document.getElementById('kbName').value.trim();
+  if (!name) return alert('Name is required');
+  const desc = document.getElementById('kbDesc').value.trim();
+  await fetch('/api/knowledge-bases', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name, description: desc }),
+  });
+  closeModal();
+  loadKnowledgeBases();
+}
+
+async function viewKb(id) {
+  try {
+    const res = await fetch(`/api/knowledge-bases/${id}`);
+    const kb = await res.json();
+    const s = kb.stats || {};
+    const sizeKB = ((s.total_size || 0) / 1024).toFixed(1);
+
+    showModal(`
+      <h3 style="color:var(--text-primary); margin-bottom:16px;">📚 ${kb.name}</h3>
+      <div style="color:var(--text-muted); font-size:13px; margin-bottom:16px;">${kb.description || ''}</div>
+      <div style="display:flex; gap:12px; margin-bottom:16px;">
+        <div style="flex:1; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:var(--accent);">${s.doc_count || 0}</div>
+          <div style="font-size:11px; color:var(--text-muted);">Documents</div>
+        </div>
+        <div style="flex:1; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:var(--green);">${s.total_chunks || 0}</div>
+          <div style="font-size:11px; color:var(--text-muted);">Chunks</div>
+        </div>
+        <div style="flex:1; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:var(--orange);">${sizeKB}</div>
+          <div style="font-size:11px; color:var(--text-muted);">KB</div>
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:6px;">📄 Documents</label>
+        <div style="max-height:200px; overflow-y:auto; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px;">
+          ${(kb.documents||[]).length ? (kb.documents||[]).map(d =>
+            '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border);">' +
+            '<div><span style="color:var(--text-primary); font-size:13px;">' + d.filename + '</span>' +
+            '<span style="color:var(--text-muted); font-size:11px; margin-left:8px;">' + (d.file_size/1024).toFixed(1) + ' KB · ' + d.chunk_count + ' chunks</span></div>' +
+            '<button onclick="deleteKbDoc(\'' + id + '\',\'' + d.id + '\',\'' + d.filename + '\')" style="padding:4px 8px; background:none; border:1px solid var(--red); border-radius:4px; color:var(--red); cursor:pointer; font-size:11px;">✕</button></div>'
+          ).join('') : '<div style="color:var(--text-muted); text-align:center; padding:20px;">No documents yet</div>'}
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:6px;">📤 Upload Document</label>
+        <input type="file" id="kbFileUpload" accept=".txt,.md,.csv,.json" style="width:100%; padding:8px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:13px;">
+        <button onclick="uploadKbDocument('${id}')" style="margin-top:8px; padding:6px 14px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-size:12px;">📤 Upload</button>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:space-between; margin-top:12px;">
+        <button onclick="deleteKb('${id}','${kb.name}')" style="padding:8px 14px; background:var(--bg-glass); border:1px solid var(--red); border-radius:var(--radius-sm); color:var(--red); cursor:pointer; font-size:12px;">🗑 Delete KB</button>
+        <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Close</button>
+      </div>
+    `);
+  } catch(e) { console.error('viewKb:', e); alert('Failed to load KB'); }
+}
+
+async function uploadKbDocument(kbId) {
+  const input = document.getElementById('kbFileUpload');
+  if (!input.files.length) return alert('Select a file first');
+  const form = new FormData();
+  form.append('file', input.files[0]);
+  const res = await fetch(`/api/knowledge-bases/${kbId}/documents`, { method:'POST', body:form });
+  const data = await res.json();
+  alert(`Uploaded: ${data.filename} (${data.chunks} chunks)`);
+  viewKb(kbId);
+}
+
+async function deleteKbDoc(kbId, docId, filename) {
+  if (!confirm(`Delete document "${filename}"?`)) return;
+  await fetch(`/api/knowledge-bases/${kbId}/documents/${docId}`, { method:'DELETE' });
+  viewKb(kbId);
+}
+
+async function deleteKb(id, name) {
+  if (!confirm(`Delete knowledge base "${name}" and all documents?`)) return;
+  await fetch(`/api/knowledge-bases/${id}`, { method:'DELETE' });
+  closeModal();
+  loadKnowledgeBases();
 }
 
 // ============== API Keys ==============
