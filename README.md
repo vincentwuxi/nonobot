@@ -10,6 +10,9 @@
     <a href="./COMMUNICATION.md"><img src="https://img.shields.io/badge/WeChat-Group-C5EAB4?style=flat&logo=wechat&logoColor=white" alt="WeChat"></a>
     <a href="https://discord.gg/MnCvHqpUGB"><img src="https://img.shields.io/badge/Discord-Community-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
   </p>
+  <p>
+    <b>English</b> | <a href="./README_ZH.md">中文</a>
+  </p>
 </div>
 
 🐈 **nanobot** is an **ultra-lightweight** personal AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw).
@@ -36,6 +39,9 @@
 | 🌐 **External API** | `POST /api/v1/chat` · `POST /api/v1/webhook` · `GET /api/v1/employees` |
 | 💬 **Web Chat** | Real-time WebSocket chat with employee selector |
 | 📁 **File Manager** | Sandbox file system with upload/download/mkdir |
+| 🧠 **Employee Memory** | Per-employee persistent memory with GUI editor |
+| 📚 **Knowledge Bases** | Document upload, chunked storage, keyword search |
+| 🔗 **KB Integration** | Bind knowledge bases to employees for context injection |
 
 ### 🚀 Quick Start (Enterprise Mode)
 
@@ -56,7 +62,7 @@ nanobot gateway
 
 ### 📖 API Reference
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full list of 18 API endpoints.
+See [CHANGELOG.md](./CHANGELOG.md) for the full list of 27 API endpoints.
 
 ---
 
