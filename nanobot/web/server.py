@@ -982,7 +982,7 @@ async def api_quota_check(request: Request) -> JSONResponse:
 async def api_stats(request: Request) -> JSONResponse:
     """Aggregated statistics for the dashboard."""
     from nanobot.db.engine import get_db
-    from nanobot.db.models import User, Employee, AuditLog
+    from nanobot.db.models import User, Employee, AuditLog, KnowledgeBase, KnowledgeDocument, ChatFeedback
     from sqlalchemy import select, func
 
     async with get_db() as db:
@@ -998,6 +998,17 @@ async def api_stats(request: Request) -> JSONResponse:
             select(func.coalesce(func.sum(Employee.total_tokens), 0)).select_from(Employee)
         ) or 0
         audit_count = await db.scalar(select(func.count()).select_from(AuditLog)) or 0
+
+        # KB stats
+        kb_count = await db.scalar(select(func.count()).select_from(KnowledgeBase)) or 0
+        kb_docs = await db.scalar(select(func.count()).select_from(KnowledgeDocument)) or 0
+
+        # Feedback stats
+        fb_total = await db.scalar(select(func.count()).select_from(ChatFeedback)) or 0
+        fb_positive = await db.scalar(
+            select(func.count()).select_from(ChatFeedback).where(ChatFeedback.rating > 0)
+        ) or 0
+        satisfaction = round(fb_positive / fb_total * 100) if fb_total > 0 else 0
 
         # Recent audit activities (last 10)
         recent = await db.execute(
@@ -1020,6 +1031,11 @@ async def api_stats(request: Request) -> JSONResponse:
         "audit_entries": audit_count,
         "connections": len(manager.active),
         "sessions": len(_sessions.list_sessions()) if _sessions else 0,
+        "knowledge_bases": kb_count,
+        "knowledge_docs": kb_docs,
+        "feedback_total": fb_total,
+        "feedback_positive": fb_positive,
+        "satisfaction": satisfaction,
         "recent_activity": [{
             "timestamp": l.timestamp.isoformat() if l.timestamp else None,
             "username": l.username, "action": l.action,
@@ -1031,6 +1047,234 @@ async def api_stats(request: Request) -> JSONResponse:
             "is_active": e.is_active,
         } for e in employees],
     })
+
+
+# ---------------------------------------------------------------------------
+# Chat Feedback API
+# ---------------------------------------------------------------------------
+
+async def api_feedback(request: Request) -> JSONResponse:
+    """Submit feedback for an assistant message."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import ChatFeedback
+
+    data = await request.json()
+    rating = data.get("rating", 0)
+    if rating not in (1, -1):
+        return JSONResponse({"error": "rating must be 1 or -1"}, status_code=400)
+
+    user = getattr(request.state, "user", {})
+    fb = ChatFeedback(
+        user_id=user.get("user_id"),
+        employee_id=data.get("employee_id"),
+        message_preview=(data.get("message", ""))[:200],
+        rating=rating,
+    )
+    async with get_db() as db:
+        db.add(fb)
+        await db.commit()
+
+    return JSONResponse({"status": "ok", "id": fb.id})
+
+
+# ---------------------------------------------------------------------------
+# Task Management API
+# ---------------------------------------------------------------------------
+
+def _task_to_dict(t) -> dict:
+    return {
+        "id": t.id, "title": t.title, "description": t.description,
+        "employee_id": t.employee_id,
+        "employee_name": t.employee.name if t.employee else None,
+        "employee_avatar": (t.employee.avatar or '🤖') if t.employee else None,
+        "assigned_by": t.assigned_by,
+        "status": t.status, "priority": t.priority,
+        "schedule": t.schedule, "result": t.result,
+        "token_cost": t.token_cost,
+        "started_at": t.started_at.isoformat() if t.started_at else None,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+async def api_tasks_list(request: Request) -> JSONResponse:
+    """List all tasks."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import EmployeeTask
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    async with get_db() as db:
+        result = await db.execute(
+            select(EmployeeTask).options(selectinload(EmployeeTask.employee))
+            .order_by(EmployeeTask.created_at.desc())
+        )
+        tasks = result.scalars().all()
+    return JSONResponse([_task_to_dict(t) for t in tasks])
+
+
+async def api_tasks_create(request: Request) -> JSONResponse:
+    """Create a new task."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import EmployeeTask
+
+    data = await request.json()
+    title = data.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "title required"}, status_code=400)
+
+    user = getattr(request.state, "user", {})
+    task = EmployeeTask(
+        title=title,
+        description=data.get("description", ""),
+        employee_id=data.get("employee_id") or None,
+        assigned_by=user.get("user_id"),
+        priority=data.get("priority", "medium"),
+        schedule=data.get("schedule") or None,
+    )
+    async with get_db() as db:
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+    return JSONResponse({"id": task.id, "status": "created"}, status_code=201)
+
+
+async def api_task_detail(request: Request) -> JSONResponse:
+    """Get, update, or delete a task."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import EmployeeTask
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    task_id = request.path_params["id"]
+
+    if request.method == "DELETE":
+        async with get_db() as db:
+            result = await db.execute(select(EmployeeTask).where(EmployeeTask.id == task_id))
+            task = result.scalar_one_or_none()
+            if not task:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            await db.delete(task)
+            await db.commit()
+        return JSONResponse({"status": "deleted"})
+
+    if request.method == "PUT":
+        data = await request.json()
+        async with get_db() as db:
+            result = await db.execute(
+                select(EmployeeTask).options(selectinload(EmployeeTask.employee))
+                .where(EmployeeTask.id == task_id)
+            )
+            task = result.scalar_one_or_none()
+            if not task:
+                return JSONResponse({"error": "not found"}, status_code=404)
+            for field in ("title", "description", "employee_id", "priority", "schedule", "status", "result"):
+                if field in data:
+                    setattr(task, field, data[field] or (None if field in ("employee_id", "schedule") else ""))
+            if data.get("status") == "running" and not task.started_at:
+                task.started_at = datetime.utcnow()
+            if data.get("status") in ("completed", "failed") and not task.completed_at:
+                task.completed_at = datetime.utcnow()
+            await db.commit()
+            await db.refresh(task)
+        return JSONResponse(_task_to_dict(task))
+
+    # GET
+    async with get_db() as db:
+        result = await db.execute(
+            select(EmployeeTask).options(selectinload(EmployeeTask.employee))
+            .where(EmployeeTask.id == task_id)
+        )
+        task = result.scalar_one_or_none()
+        if not task:
+            return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(_task_to_dict(task))
+
+
+async def api_task_execute(request: Request) -> JSONResponse:
+    """Execute a task using the assigned employee's agent."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import EmployeeTask, Employee
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from datetime import datetime
+
+    task_id = request.path_params["id"]
+    async with get_db() as db:
+        result = await db.execute(
+            select(EmployeeTask).options(selectinload(EmployeeTask.employee))
+            .where(EmployeeTask.id == task_id)
+        )
+        task = result.scalar_one_or_none()
+        if not task:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if not task.employee_id:
+            return JSONResponse({"error": "no employee assigned"}, status_code=400)
+
+        # Build prompt from task
+        prompt = f"Task: {task.title}"
+        if task.description:
+            prompt += f"\n\nDetails: {task.description}"
+        prompt += "\n\nPlease complete this task and provide a detailed result."
+
+        task.status = "running"
+        task.started_at = datetime.utcnow()
+        await db.commit()
+
+    # Execute via agent (async, use employee's config)
+    import asyncio
+    asyncio.create_task(_run_task_agent(task_id, task.employee_id, prompt))
+
+    return JSONResponse({"status": "running", "task_id": task_id})
+
+
+async def _run_task_agent(task_id: str, employee_id: str, prompt: str):
+    """Background task execution via agent."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import EmployeeTask, Employee
+    from sqlalchemy import select
+    from datetime import datetime
+    import traceback
+
+    try:
+        # Get agent and employee
+        if not _agent:
+            raise RuntimeError("Agent not initialized")
+
+        async with get_db() as db:
+            emp_result = await db.execute(select(Employee).where(Employee.id == employee_id))
+            emp = emp_result.scalar_one_or_none()
+
+        if not emp:
+            raise RuntimeError(f"Employee {employee_id} not found")
+
+        # Build context with employee persona
+        system_extra = emp.system_prompt or ""
+        messages = [{"role": "user", "content": prompt}]
+
+        # Run through agent
+        response = await _agent.chat(prompt, system_extra=system_extra, model=emp.model or None)
+        result_text = response if isinstance(response, str) else str(response)
+
+        async with get_db() as db:
+            t_result = await db.execute(select(EmployeeTask).where(EmployeeTask.id == task_id))
+            task = t_result.scalar_one_or_none()
+            if task:
+                task.status = "completed"
+                task.result = result_text
+                task.completed_at = datetime.utcnow()
+                await db.commit()
+
+    except Exception as e:
+        import traceback
+        async with get_db() as db:
+            t_result = await db.execute(select(EmployeeTask).where(EmployeeTask.id == task_id))
+            task = t_result.scalar_one_or_none()
+            if task:
+                task.status = "failed"
+                task.result = f"Error: {str(e)}\n{traceback.format_exc()}"
+                task.completed_at = datetime.utcnow()
+                await db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -1826,6 +2070,11 @@ def create_app(
         # API routes
         Route("/api/status", api_status),
         Route("/api/stats", api_stats, methods=["GET"]),
+        Route("/api/feedback", api_feedback, methods=["POST"]),
+        Route("/api/tasks", api_tasks_list, methods=["GET"]),
+        Route("/api/tasks", api_tasks_create, methods=["POST"]),
+        Route("/api/tasks/{id}", api_task_detail, methods=["GET", "PUT", "DELETE"]),
+        Route("/api/tasks/{id}/execute", api_task_execute, methods=["POST"]),
         Route("/api/settings", api_settings_get, methods=["GET"]),
         Route("/api/sessions", api_sessions),
         Route("/api/sessions/{key:path}", api_session_detail, methods=["GET"]),

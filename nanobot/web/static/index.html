@@ -558,6 +558,9 @@ body {
       <div class="nav-item" data-panel="files" onclick="switchPanel('files')">
         <span class="icon">📁</span><span>Files</span>
       </div>
+      <div class="nav-item" data-panel="tasks" onclick="switchPanel('tasks')">
+        <span class="icon">📋</span><span>Tasks</span>
+      </div>
       <div class="nav-divider" id="adminSection">
       </div>
       <div class="nav-label">Admin</div>
@@ -616,8 +619,18 @@ body {
         <div class="chat-input-wrap">
           <textarea id="chatInput" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
           <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="Send">➤</button>
+          <button onclick="exportConversation()" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 10px;cursor:pointer;color:var(--text-muted);font-size:14px;" title="Export conversation as Markdown">📥</button>
         </div>
       </div>
+    </div>
+
+    <!-- Tasks Panel -->
+    <div class="panel" id="panel-tasks">
+      <div class="panel-header">
+        <h2>📋 Tasks</h2>
+        <button class="new-session-btn" onclick="showCreateTaskModal()">+ New Task</button>
+      </div>
+      <div id="tasksList" style="padding:15px;"></div>
     </div>
 
     <!-- Dashboard Panel -->
@@ -885,14 +898,35 @@ function addMessage(role, content) {
     div.innerHTML = `<div class="msg-bubble">${escapeHtml(content)}</div>`;
   } else {
     const avatar = role === 'user' ? '👤' : '🐈';
+    const feedbackId = 'fb_' + Date.now();
+    const feedbackBtns = role === 'assistant' ? `
+      <div id="${feedbackId}" style="display:flex;gap:6px;margin-top:6px;">
+        <button onclick="submitFeedback(1,'${feedbackId}',this)" style="background:none;border:1px solid var(--border);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:13px;color:var(--text-muted);transition:all .2s;" title="Good response">👍</button>
+        <button onclick="submitFeedback(-1,'${feedbackId}',this)" style="background:none;border:1px solid var(--border);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:13px;color:var(--text-muted);transition:all .2s;" title="Bad response">👎</button>
+      </div>` : '';
     div.innerHTML = `
       <div class="msg-avatar">${avatar}</div>
-      <div class="msg-bubble">${renderMarkdown(content)}</div>
+      <div class="msg-bubble">${renderMarkdown(content)}${feedbackBtns}</div>
     `;
   }
 
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
+}
+
+async function submitFeedback(rating, feedbackId, btn) {
+  const el = document.getElementById(feedbackId);
+  if (!el) return;
+  try {
+    const empSel = document.getElementById('employeeSelect');
+    await fetch('/api/feedback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating, employee_id: empSel ? empSel.value : null, message: btn.closest('.msg-bubble')?.textContent?.slice(0,200) || '' }),
+    });
+    el.innerHTML = rating > 0
+      ? '<span style="color:var(--green);font-size:12px;">👍 Thanks for feedback!</span>'
+      : '<span style="color:var(--orange);font-size:12px;">👎 Feedback noted</span>';
+  } catch(e) { console.error('Feedback error:', e); }
 }
 
 function showThinking() {
@@ -925,6 +959,26 @@ function disableInput() {
 function enableInput() {
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('chatInput').focus();
+}
+
+function exportConversation() {
+  const msgs = document.querySelectorAll('#chatMessages .msg');
+  if (!msgs.length) return alert('No messages to export');
+  let md = `# Conversation Export\n\n*Exported: ${new Date().toLocaleString()}*\n\n---\n\n`;
+  msgs.forEach(m => {
+    const bubble = m.querySelector('.msg-bubble');
+    if (!bubble) return;
+    const text = bubble.innerText.replace(/👍 Thanks for feedback!|👎 Feedback noted|👍|👎/g, '').trim();
+    if (m.classList.contains('user')) md += `## 👤 User\n\n${text}\n\n`;
+    else if (m.classList.contains('assistant')) md += `## 🐈 Assistant\n\n${text}\n\n`;
+    else md += `> *${text}*\n\n`;
+  });
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `conversation_${new Date().toISOString().slice(0,10)}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ============== Markdown (simple) ==============
@@ -980,6 +1034,7 @@ function switchPanel(name) {
 
   if (name === 'dashboard') loadDashboard();
   if (name === 'sessions') loadSessions();
+  if (name === 'tasks') loadTasks();
   if (name === 'files') loadFiles();
   if (name === 'config') loadConfig();
   if (name === 'employees') loadEmployees();
@@ -1290,6 +1345,16 @@ async function loadDashboard() {
         <div class="value">${stats.sessions}</div>
         <div class="sub">active</div>
       </div>
+      <div class="stat-card">
+        <div class="label">📚 Knowledge</div>
+        <div class="value">${stats.knowledge_bases || 0}</div>
+        <div class="sub">${stats.knowledge_docs || 0} documents</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">👍 Satisfaction</div>
+        <div class="value">${stats.satisfaction || 0}%</div>
+        <div class="sub">${stats.feedback_total || 0} ratings</div>
+      </div>
     `;
 
     // Employee usage breakdown + recent activity
@@ -1333,6 +1398,135 @@ async function loadDashboard() {
   } catch (e) {
     document.getElementById('statsGrid').innerHTML = `<p style="color:var(--red)">Failed to load: ${e.message}</p>`;
   }
+}
+
+// ============== Task Management ==============
+const PRIORITY_COLORS = { urgent:'var(--red)', high:'var(--orange)', medium:'var(--accent)', low:'var(--text-muted)' };
+const STATUS_ICONS = { pending:'⏳', running:'⚡', completed:'✅', failed:'❌' };
+
+async function loadTasks() {
+  try {
+    const res = await fetch('/api/tasks');
+    const tasks = await res.json();
+    const container = document.getElementById('tasksList');
+    if (!tasks.length) {
+      container.innerHTML = '<div style="color:var(--text-muted);padding:40px;text-align:center;">No tasks yet. Click "+ New Task" to create one.</div>';
+      return;
+    }
+    container.innerHTML = tasks.map(t => `
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px;cursor:pointer;transition:var(--transition);" onclick="viewTask('${t.id}')">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+          <span style="font-size:18px;">${STATUS_ICONS[t.status] || '⏳'}</span>
+          <span style="font-weight:600;color:var(--text-primary);flex:1;font-size:15px;">${escapeHtml(t.title)}</span>
+          <span style="padding:2px 8px;border-radius:10px;font-size:11px;border:1px solid ${PRIORITY_COLORS[t.priority] || 'var(--border)'};color:${PRIORITY_COLORS[t.priority] || 'var(--text-muted)'};">${t.priority}</span>
+          <span style="padding:2px 8px;border-radius:10px;font-size:11px;background:${t.status==='completed'?'rgba(52,211,153,0.15)':t.status==='running'?'rgba(99,102,241,0.15)':t.status==='failed'?'rgba(248,113,113,0.15)':'rgba(255,255,255,0.05)'};color:${t.status==='completed'?'var(--green)':t.status==='running'?'var(--accent)':t.status==='failed'?'var(--red)':'var(--text-muted)'};">${t.status}</span>
+        </div>
+        ${t.description ? `<div style="color:var(--text-secondary);font-size:13px;margin-bottom:8px;">${escapeHtml(t.description).slice(0,100)}</div>` : ''}
+        <div style="display:flex;gap:12px;font-size:11px;color:var(--text-muted);">
+          ${t.employee_name ? `<span>${t.employee_avatar || '🤖'} ${t.employee_name}</span>` : '<span style="color:var(--orange);">⚠ Unassigned</span>'}
+          <span>📅 ${t.created_at ? new Date(t.created_at).toLocaleDateString() : '—'}</span>
+          ${t.schedule ? `<span>🔄 ${t.schedule}</span>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch(e) { console.error('loadTasks:', e); }
+}
+
+async function showCreateTaskModal() {
+  let employees = [];
+  try { employees = await (await fetch('/api/employees')).json(); } catch(e) {}
+  showModal(`
+    <h3 style="color:var(--text-primary);margin-bottom:20px;">📋 New Task</h3>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div><label style="display:block;color:var(--text-secondary);font-size:12px;margin-bottom:4px;">Title *</label>
+        <input id="taskTitle" style="width:100%;padding:8px 12px;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;" placeholder="e.g. Generate weekly sales report"></div>
+      <div><label style="display:block;color:var(--text-secondary);font-size:12px;margin-bottom:4px;">Description</label>
+        <textarea id="taskDesc" rows="3" style="width:100%;padding:8px 12px;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;resize:vertical;" placeholder="Detailed instructions for the task..."></textarea></div>
+      <div style="display:flex;gap:10px;">
+        <div style="flex:1;"><label style="display:block;color:var(--text-secondary);font-size:12px;margin-bottom:4px;">Assign to Employee</label>
+          <select id="taskEmployee" style="width:100%;padding:8px 12px;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;">
+            <option value="">— Unassigned —</option>
+            ${employees.map(e => `<option value="${e.id}">${e.avatar || '🤖'} ${e.name}</option>`).join('')}
+          </select></div>
+        <div style="flex:1;"><label style="display:block;color:var(--text-secondary);font-size:12px;margin-bottom:4px;">Priority</label>
+          <select id="taskPriority" style="width:100%;padding:8px 12px;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:14px;">
+            <option value="low">🟢 Low</option>
+            <option value="medium" selected>🟡 Medium</option>
+            <option value="high">🟠 High</option>
+            <option value="urgent">🔴 Urgent</option>
+          </select></div>
+      </div>
+      <div id="taskError" style="color:var(--red);font-size:13px;display:none;"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;">
+        <button onclick="closeModal()" style="padding:8px 16px;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;">Cancel</button>
+        <button onclick="createTask()" style="padding:8px 16px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:white;cursor:pointer;font-weight:600;">Create Task</button>
+      </div>
+    </div>
+  `);
+}
+
+async function createTask() {
+  const title = document.getElementById('taskTitle').value.trim();
+  if (!title) { const e = document.getElementById('taskError'); e.style.display='block'; e.textContent='Title is required'; return; }
+  try {
+    await fetch('/api/tasks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        description: document.getElementById('taskDesc').value.trim(),
+        employee_id: document.getElementById('taskEmployee').value || null,
+        priority: document.getElementById('taskPriority').value,
+      }),
+    });
+    closeModal();
+    loadTasks();
+  } catch(e) { console.error('createTask:', e); }
+}
+
+async function viewTask(id) {
+  try {
+    const t = await (await fetch(`/api/tasks/${id}`)).json();
+    showModal(`
+      <h3 style="color:var(--text-primary);margin-bottom:16px;">${STATUS_ICONS[t.status] || '⏳'} ${escapeHtml(t.title)}</h3>
+      <div style="display:flex;flex-direction:column;gap:12px;max-height:70vh;overflow-y:auto;">
+        <div style="display:flex;gap:8px;">
+          <span style="padding:3px 10px;border-radius:10px;font-size:12px;border:1px solid ${PRIORITY_COLORS[t.priority]};color:${PRIORITY_COLORS[t.priority]};">${t.priority}</span>
+          <span style="padding:3px 10px;border-radius:10px;font-size:12px;background:${t.status==='completed'?'rgba(52,211,153,0.15)':t.status==='running'?'rgba(99,102,241,0.15)':t.status==='failed'?'rgba(248,113,113,0.15)':'rgba(255,255,255,0.05)'};color:${t.status==='completed'?'var(--green)':t.status==='running'?'var(--accent)':t.status==='failed'?'var(--red)':'var(--text-muted)'};">${t.status}</span>
+          ${t.employee_name ? `<span style="font-size:12px;color:var(--text-secondary);">${t.employee_avatar || '🤖'} ${t.employee_name}</span>` : ''}
+        </div>
+        ${t.description ? `<div style="background:var(--bg-glass);padding:12px;border-radius:var(--radius-sm);color:var(--text-secondary);font-size:13px;">${escapeHtml(t.description)}</div>` : ''}
+        <div style="display:flex;gap:16px;font-size:12px;color:var(--text-muted);">
+          <span>Created: ${t.created_at ? new Date(t.created_at).toLocaleString() : '—'}</span>
+          ${t.started_at ? `<span>Started: ${new Date(t.started_at).toLocaleString()}</span>` : ''}
+          ${t.completed_at ? `<span>Done: ${new Date(t.completed_at).toLocaleString()}</span>` : ''}
+        </div>
+        ${t.result ? `<div><h4 style="color:var(--text-primary);margin-bottom:8px;">📄 Result</h4><div style="background:var(--bg-glass);padding:12px;border-radius:var(--radius-sm);color:var(--text-secondary);font-size:13px;max-height:300px;overflow-y:auto;white-space:pre-wrap;">${escapeHtml(t.result)}</div></div>` : ''}
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
+          ${t.status === 'pending' && t.employee_id ? `<button onclick="executeTask('${t.id}')" style="padding:8px 16px;background:var(--green);border:none;border-radius:var(--radius-sm);color:white;cursor:pointer;font-weight:600;">⚡ Execute</button>` : ''}
+          <button onclick="deleteTask('${t.id}')" style="padding:8px 16px;background:var(--bg-glass);border:1px solid var(--red);border-radius:var(--radius-sm);color:var(--red);cursor:pointer;">🗑 Delete</button>
+          <button onclick="closeModal()" style="padding:8px 16px;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;">Close</button>
+        </div>
+      </div>
+    `);
+  } catch(e) { console.error('viewTask:', e); }
+}
+
+async function executeTask(id) {
+  if (!confirm('Execute this task now?')) return;
+  try {
+    await fetch(`/api/tasks/${id}/execute`, { method: 'POST' });
+    closeModal();
+    loadTasks();
+  } catch(e) { console.error('executeTask:', e); }
+}
+
+async function deleteTask(id) {
+  if (!confirm('Delete this task?')) return;
+  try {
+    await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+    closeModal();
+    loadTasks();
+  } catch(e) { console.error('deleteTask:', e); }
 }
 
 // ============== Sessions List ==============
@@ -1654,6 +1848,7 @@ async function loadEmployees() {
           <span>💬 ${e.total_messages || 0} msgs</span>
           <span>🪙 ${(e.total_tokens || 0).toLocaleString()} tokens</span>
           ${e.model ? `<span>🧠 ${e.model}</span>` : ''}
+          ${(e.knowledge_bases || []).length ? `<span style="color:var(--accent);">📚 ${e.knowledge_bases.length} KB</span>` : ''}
         </div>
         <div style="display:flex; gap:8px;">
           <button onclick="editEmployee('${e.id}')" style="flex:1; padding:6px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer; font-size:12px;">✏️ Edit</button>
@@ -1669,7 +1864,16 @@ async function loadEmployees() {
 function showCreateEmployeeModal() {
   showModal(`
     <h3 style="color:var(--text-primary); margin-bottom:20px;">🤖 New Digital Employee</h3>
-    <div style="display:flex; flex-direction:column; gap:14px;">
+    <div style="display:flex; flex-direction:column; gap:14px; max-height:70vh; overflow-y:auto;">
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">📋 Quick Template</label>
+        <select id="empTemplate" onchange="applyTemplate()" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;">
+          <option value="">— Custom (blank) —</option>
+          <option value="hr">👩‍💼 HR Assistant</option>
+          <option value="it">🖥️ IT Helpdesk</option>
+          <option value="cs">🎧 Customer Service</option>
+          <option value="analyst">📊 Data Analyst</option>
+          <option value="writer">✍️ Content Writer</option>
+        </select></div>
       <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Name *</label>
         <input id="empName" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;" placeholder="e.g. Finance Assistant"></div>
       <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Slug *</label>
@@ -1692,6 +1896,24 @@ function showCreateEmployeeModal() {
   document.getElementById('empName').addEventListener('input', (e) => {
     document.getElementById('empSlug').value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   });
+}
+
+const EMPLOYEE_TEMPLATES = {
+  hr: { name:'HR Assistant', slug:'hr-assistant', avatar:'👩‍💼', desc:'Human resources support — policies, onboarding, leave management', prompt:'You are an HR assistant. Help employees with HR policies, leave requests, onboarding processes, and workplace questions. Always be professional, empathetic, and reference company policies when applicable.' },
+  it: { name:'IT Helpdesk', slug:'it-helpdesk', avatar:'🖥️', desc:'IT support — troubleshooting, account management, tech guidance', prompt:'You are an IT helpdesk assistant. Help users troubleshoot technical issues, manage account access, install software, and follow IT security best practices. Provide step-by-step instructions when possible.' },
+  cs: { name:'Customer Service', slug:'customer-service', avatar:'🎧', desc:'Customer support — inquiries, complaints, order tracking', prompt:'You are a customer service representative. Handle customer inquiries professionally, resolve complaints with empathy, track orders, and escalate complex issues when needed. Always prioritize customer satisfaction.' },
+  analyst: { name:'Data Analyst', slug:'data-analyst', avatar:'📊', desc:'Data analysis — reports, insights, trend identification', prompt:'You are a data analyst assistant. Help users interpret data, generate reports, identify trends, and provide actionable business insights. Use clear visualizations and structured analysis in your responses.' },
+  writer: { name:'Content Writer', slug:'content-writer', avatar:'✍️', desc:'Content creation — articles, emails, marketing copy', prompt:'You are a professional content writer. Create compelling articles, emails, marketing copy, and social media content. Adapt your tone and style to match the target audience and brand guidelines.' },
+};
+
+function applyTemplate() {
+  const t = EMPLOYEE_TEMPLATES[document.getElementById('empTemplate').value];
+  if (!t) return;
+  document.getElementById('empName').value = t.name;
+  document.getElementById('empSlug').value = t.slug;
+  document.getElementById('empAvatar').value = t.avatar;
+  document.getElementById('empDesc').value = t.desc;
+  document.getElementById('empPrompt').value = t.prompt;
 }
 
 async function createEmployee() {

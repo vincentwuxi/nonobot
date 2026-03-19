@@ -225,3 +225,42 @@ class KnowledgeDocument(Base):
 
     # relationships
     knowledge_base: Mapped["KnowledgeBase"] = relationship(back_populates="documents")
+
+
+# ─────────────────────── Chat Feedback ───────────────────────
+
+class ChatFeedback(Base):
+    __tablename__ = "chat_feedback"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    employee_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)  # 1 = 👍, -1 = 👎
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+# ─────────────────────── Employee Task ───────────────────────
+
+class EmployeeTask(Base):
+    __tablename__ = "employee_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    employee_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("employees.id"), nullable=True)
+    assigned_by: Mapped[str | None] = mapped_column(String(36), nullable=True)  # user_id
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, running, completed, failed
+    priority: Mapped[str] = mapped_column(String(10), default="medium")  # low, medium, high, urgent
+    schedule: Mapped[str | None] = mapped_column(String(100), nullable=True)  # cron expression or natural language
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_cost: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    # relationships
+    employee: Mapped["Employee"] = relationship()
