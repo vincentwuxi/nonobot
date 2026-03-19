@@ -1481,7 +1481,8 @@ async function loadEmployees() {
         </div>
         <div style="display:flex; gap:8px;">
           <button onclick="editEmployee('${e.id}')" style="flex:1; padding:6px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer; font-size:12px;">✏️ Edit</button>
-          <button onclick="toggleEmployee('${e.id}', ${e.is_active})" style="flex:1; padding:6px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:${e.is_active ? 'var(--orange)' : 'var(--green)'}; cursor:pointer; font-size:12px;">${e.is_active ? '⏸ Disable' : '▶ Enable'}</button>
+          <button onclick="showEmployeeMemory('${e.id}','${e.name}')" style="flex:1; padding:6px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--accent); cursor:pointer; font-size:12px;">🧠 Memory</button>
+          <button onclick="toggleEmployee('${e.id}', ${e.is_active})" style="padding:6px 10px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:${e.is_active ? 'var(--orange)' : 'var(--green)'}; cursor:pointer; font-size:12px;">${e.is_active ? '⏸' : '▶'}</button>
           <button onclick="deleteEmployee('${e.id}', '${e.name}')" style="padding:6px 10px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--red); cursor:pointer; font-size:12px;">🗑</button>
         </div>
       </div>
@@ -1601,6 +1602,75 @@ async function deleteEmployee(id, name) {
   if (!confirm(`Delete employee "${name}"? This cannot be undone.`)) return;
   await fetch(`/api/employees/${id}`, { method: 'DELETE' });
   loadEmployees();
+}
+
+async function showEmployeeMemory(id, name) {
+  try {
+    const res = await fetch(`/api/employees/${id}/memory`);
+    const data = await res.json();
+    const s = data.stats;
+    const memSizeKB = (s.memory_size_bytes / 1024).toFixed(1);
+    const histSizeKB = (s.history_size_bytes / 1024).toFixed(1);
+
+    showModal(`
+      <h3 style="color:var(--text-primary); margin-bottom:16px;">🧠 ${name} — Memory</h3>
+      <div style="display:flex; gap:12px; margin-bottom:16px;">
+        <div style="flex:1; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:var(--accent);">${memSizeKB}</div>
+          <div style="font-size:11px; color:var(--text-muted);">Memory KB</div>
+        </div>
+        <div style="flex:1; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:var(--green);">${s.history_entries_count}</div>
+          <div style="font-size:11px; color:var(--text-muted);">History Entries</div>
+        </div>
+        <div style="flex:1; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; text-align:center;">
+          <div style="font-size:20px; font-weight:700; color:var(--orange);">${histSizeKB}</div>
+          <div style="font-size:11px; color:var(--text-muted);">History KB</div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:14px;">
+        <label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:6px;">📖 Long-term Memory (editable)</label>
+        <textarea id="memoryEditor" style="width:100%; height:150px; padding:10px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:13px; font-family:monospace; resize:vertical;">${(data.long_term_memory||'').replace(/</g,'&lt;')}</textarea>
+      </div>
+
+      <div style="margin-bottom:14px;">
+        <label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:6px;">📜 History Timeline (${s.history_entries_count} entries)</label>
+        <div style="max-height:200px; overflow-y:auto; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px;">
+          ${data.history_entries.length ? data.history_entries.slice(-20).reverse().map(e =>
+            '<div style="padding:8px 0; border-bottom:1px solid var(--border); font-size:12px; color:var(--text-secondary); font-family:monospace; white-space:pre-wrap;">' + e.replace(/</g,'&lt;') + '</div>'
+          ).join('') : '<div style="color:var(--text-muted); text-align:center; padding:20px;">No history yet</div>'}
+        </div>
+      </div>
+
+      <div style="display:flex; gap:10px; justify-content:space-between; margin-top:12px;">
+        <button onclick="clearEmployeeMemory('${id}','${name}')" style="padding:8px 14px; background:var(--bg-glass); border:1px solid var(--red); border-radius:var(--radius-sm); color:var(--red); cursor:pointer; font-size:12px;">🗑 Clear All</button>
+        <div style="display:flex; gap:8px;">
+          <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Close</button>
+          <button onclick="saveEmployeeMemory('${id}')" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">💾 Save</button>
+        </div>
+      </div>
+    `);
+  } catch(e) { console.error('showEmployeeMemory:', e); alert('Failed to load memory'); }
+}
+
+async function saveEmployeeMemory(id) {
+  const memory = document.getElementById('memoryEditor').value;
+  await fetch(`/api/employees/${id}/memory`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ long_term_memory: memory }),
+  });
+  alert('Memory saved!');
+}
+
+async function clearEmployeeMemory(id, name) {
+  if (!confirm(`Clear ALL memory for "${name}"? This cannot be undone.`)) return;
+  await fetch(`/api/employees/${id}/memory`, {
+    method: 'DELETE', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ target: 'all' }),
+  });
+  closeModal();
+  alert(`Memory cleared for ${name}`);
 }
 
 // ============== Users ==============

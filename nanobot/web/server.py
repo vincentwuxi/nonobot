@@ -1191,6 +1191,152 @@ async def api_keys_revoke(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Employee Memory Management
+# ---------------------------------------------------------------------------
+
+def _get_employee_memory_dir(slug: str) -> Path:
+    """Get the memory directory for a specific employee."""
+    base = Path(_config.workspace_path) if _config else Path.home() / ".nanobot"
+    mem_dir = base / "employees" / slug / "memory"
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    return mem_dir
+
+
+async def api_employee_memory_get(request: Request) -> JSONResponse:
+    """Get an employee's memory (long-term + history + stats)."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee
+    from sqlalchemy import select
+
+    emp_id = request.path_params["id"]
+
+    async with get_db() as db:
+        result = await db.execute(select(Employee).where(Employee.id == emp_id))
+        emp = result.scalar_one_or_none()
+
+    if not emp:
+        return JSONResponse({"error": "employee not found"}, status_code=404)
+
+    mem_dir = _get_employee_memory_dir(emp.slug)
+    memory_file = mem_dir / "MEMORY.md"
+    history_file = mem_dir / "HISTORY.md"
+
+    long_term = memory_file.read_text(encoding="utf-8") if memory_file.exists() else ""
+    history = history_file.read_text(encoding="utf-8") if history_file.exists() else ""
+
+    # Parse history entries
+    history_entries = []
+    if history.strip():
+        for block in history.strip().split("\n\n"):
+            block = block.strip()
+            if block:
+                history_entries.append(block)
+
+    return JSONResponse({
+        "employee_id": emp.id,
+        "employee_name": emp.name,
+        "employee_slug": emp.slug,
+        "long_term_memory": long_term,
+        "history_entries": history_entries,
+        "stats": {
+            "memory_size_bytes": len(long_term.encode("utf-8")),
+            "history_entries_count": len(history_entries),
+            "history_size_bytes": len(history.encode("utf-8")),
+            "memory_file_exists": memory_file.exists(),
+            "history_file_exists": history_file.exists(),
+        },
+    })
+
+
+async def api_employee_memory_update(request: Request) -> JSONResponse:
+    """Update an employee's long-term memory."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee, AuditLog
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    emp_id = request.path_params["id"]
+
+    async with get_db() as db:
+        result = await db.execute(select(Employee).where(Employee.id == emp_id))
+        emp = result.scalar_one_or_none()
+
+    if not emp:
+        return JSONResponse({"error": "employee not found"}, status_code=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    mem_dir = _get_employee_memory_dir(emp.slug)
+
+    # Update long-term memory
+    if "long_term_memory" in body:
+        memory_file = mem_dir / "MEMORY.md"
+        memory_file.write_text(body["long_term_memory"], encoding="utf-8")
+
+    # Optionally append to history
+    if "history_entry" in body and body["history_entry"].strip():
+        history_file = mem_dir / "HISTORY.md"
+        with open(history_file, "a", encoding="utf-8") as f:
+            f.write(body["history_entry"].rstrip() + "\n\n")
+
+    async with get_db() as db:
+        db.add(AuditLog(
+            user_id=user.get("sub"), username=user.get("username"),
+            action="update_memory", resource_type="employee", resource_id=emp_id,
+            detail={"employee": emp.slug},
+        ))
+
+    return JSONResponse({"ok": True})
+
+
+async def api_employee_memory_delete(request: Request) -> JSONResponse:
+    """Clear an employee's memory (long-term and/or history)."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee, AuditLog
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    emp_id = request.path_params["id"]
+
+    async with get_db() as db:
+        result = await db.execute(select(Employee).where(Employee.id == emp_id))
+        emp = result.scalar_one_or_none()
+
+    if not emp:
+        return JSONResponse({"error": "employee not found"}, status_code=404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    mem_dir = _get_employee_memory_dir(emp.slug)
+    target = body.get("target", "all")  # "memory", "history", "all"
+
+    if target in ("memory", "all"):
+        memory_file = mem_dir / "MEMORY.md"
+        if memory_file.exists():
+            memory_file.write_text("", encoding="utf-8")
+
+    if target in ("history", "all"):
+        history_file = mem_dir / "HISTORY.md"
+        if history_file.exists():
+            history_file.write_text("", encoding="utf-8")
+
+    async with get_db() as db:
+        db.add(AuditLog(
+            user_id=user.get("sub"), username=user.get("username"),
+            action="clear_memory", resource_type="employee", resource_id=emp_id,
+            detail={"employee": emp.slug, "target": target},
+        ))
+
+    return JSONResponse({"ok": True, "cleared": target})
+
+
+# ---------------------------------------------------------------------------
 # External API Gateway (v1)
 # ---------------------------------------------------------------------------
 
@@ -1425,6 +1571,10 @@ def create_app(
         Route("/api/keys", api_keys_list, methods=["GET"]),
         Route("/api/keys", api_keys_create, methods=["POST"]),
         Route("/api/keys/{id}/revoke", api_keys_revoke, methods=["POST"]),
+        # Employee Memory
+        Route("/api/employees/{id}/memory", api_employee_memory_get, methods=["GET"]),
+        Route("/api/employees/{id}/memory", api_employee_memory_update, methods=["PUT"]),
+        Route("/api/employees/{id}/memory", api_employee_memory_delete, methods=["DELETE"]),
         # External API (v1) — authenticated via API key
         Route("/api/v1/chat", api_v1_chat, methods=["POST"]),
         Route("/api/v1/employees", api_v1_employees_list, methods=["GET"]),
