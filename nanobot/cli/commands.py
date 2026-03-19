@@ -600,13 +600,36 @@ def gateway(
 
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
+    # --- Web Interface ---
+    from nanobot.web.server import create_app
+    from nanobot.web.channel import WebChannel
+
+    web_app = create_app(bus=bus, config=config, sessions=session_manager, model=config.agents.defaults.model)
+
+    # Register WebChannel manually so ChannelManager can route web messages
+    web_channel = WebChannel({"enabled": True, "allowFrom": ["*"]}, bus)
+    channels.channels["web"] = web_channel
+
+    console.print(f"[green]✓[/green] Web interface: [cyan]http://localhost:{port}[/cyan]")
+
     async def run():
+        import uvicorn
+
+        uvi_config = uvicorn.Config(
+            web_app,
+            host=config.gateway.host,
+            port=port,
+            log_level="warning",
+        )
+        uvi_server = uvicorn.Server(uvi_config)
+
         try:
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
+                uvi_server.serve(),
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
