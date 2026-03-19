@@ -572,6 +572,9 @@ body {
       </div>
       <div class="nav-divider"></div>
       <div class="nav-label">Settings</div>
+      <div class="nav-item" data-panel="apikeys" onclick="switchPanel('apikeys')">
+        <span class="icon">🔑</span><span>API Keys</span>
+      </div>
       <div class="nav-item" data-panel="config" onclick="switchPanel('config')">
         <span class="icon">⚙️</span><span>Config</span>
       </div>
@@ -692,6 +695,29 @@ body {
         <span class="subtitle">Recent Activity</span>
       </div>
       <div id="auditList" style="padding:20px;"></div>
+    </div>
+
+    <!-- API Keys Panel -->
+    <div class="panel" id="panel-apikeys">
+      <div class="panel-header">
+        <h2>🔑 API Keys</h2>
+        <span class="subtitle" id="keyCount">0 key(s)</span>
+        <div class="panel-actions">
+          <button class="btn-primary" onclick="showCreateKeyModal()">+ New Key</button>
+        </div>
+      </div>
+      <div class="panel-body" id="keysList" style="padding:20px;">Loading...</div>
+      <div style="padding:0 20px 20px;">
+        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:16px;">
+          <h4 style="color:var(--text-primary); margin-bottom:12px;">📖 External API Reference</h4>
+          <div style="font-size:12px; color:var(--text-muted); line-height:1.8;">
+            <div><code style="color:var(--accent);">POST /api/v1/chat</code> — Send a message to a digital employee</div>
+            <div><code style="color:var(--accent);">GET /api/v1/employees</code> — List available employees</div>
+            <div><code style="color:var(--accent);">POST /api/v1/webhook</code> — Receive external events</div>
+            <div style="margin-top:8px; color:var(--text-secondary);">Auth: <code>X-API-Key: nb-xxx</code> or <code>Authorization: Bearer nb-xxx</code></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Settings Panel -->
@@ -944,7 +970,97 @@ function switchPanel(name) {
   if (name === 'employees') loadEmployees();
   if (name === 'users') loadUsers();
   if (name === 'audit') loadAudit();
+  if (name === 'apikeys') loadApiKeys();
   if (name === 'settings') loadSettings();
+}
+
+// ============== API Keys ==============
+async function loadApiKeys() {
+  try {
+    const res = await fetch('/api/keys');
+    const list = await res.json();
+    document.getElementById('keyCount').textContent = `${list.length} key(s)`;
+    if (list.length === 0) {
+      document.getElementById('keysList').innerHTML = '<div style="color:var(--text-muted); padding:40px; text-align:center;">No API keys yet. Create one to enable external integrations.</div>';
+      return;
+    }
+    document.getElementById('keysList').innerHTML = `
+      <table style="width:100%; border-collapse:collapse;">
+        <thead><tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Name</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Key Prefix</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Scopes</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Status</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Last Used</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Actions</th>
+        </tr></thead>
+        <tbody>${list.map(k => `
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:12px 10px; font-weight:500; color:var(--text-primary);">${k.name}</td>
+            <td style="padding:12px 10px;"><code style="color:var(--accent); font-size:12px;">${k.key_prefix}...</code></td>
+            <td style="padding:12px 10px; font-size:12px; color:var(--text-muted);">${(k.scopes||[]).join(', ')}</td>
+            <td style="padding:12px 10px;"><span style="color:${k.is_active ? 'var(--green)' : 'var(--red)'}; font-size:13px;">${k.is_active ? '● Active' : '○ Revoked'}</span></td>
+            <td style="padding:12px 10px; color:var(--text-muted); font-size:12px;">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}</td>
+            <td style="padding:12px 10px;">
+              ${k.is_active ? `<button onclick="revokeApiKey('${k.id}','${k.name}')" style="padding:4px 10px; background:var(--bg-glass); border:1px solid var(--red); border-radius:var(--radius-sm); color:var(--red); cursor:pointer; font-size:12px;">Revoke</button>` : '<span style="color:var(--text-muted); font-size:12px;">—</span>'}
+            </td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`;
+  } catch(e) { console.error('loadApiKeys:', e); }
+}
+
+function showCreateKeyModal() {
+  showModal(`
+    <h3 style="color:var(--text-primary); margin-bottom:20px;">\ud83d\udd11 Create API Key</h3>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Key Name *</label>
+        <input id="newKeyName" placeholder="e.g. My Integration" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Scopes</label>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+          <label style="color:var(--text-secondary); font-size:13px;"><input type="checkbox" id="scopeChat" checked> chat</label>
+          <label style="color:var(--text-secondary); font-size:13px;"><input type="checkbox" id="scopeFiles"> files</label>
+          <label style="color:var(--text-secondary); font-size:13px;"><input type="checkbox" id="scopeAdmin"> admin</label>
+        </div></div>
+      <div id="newKeyResult" style="display:none; background:var(--bg-glass); border:1px solid var(--green); border-radius:var(--radius-sm); padding:12px;">
+        <div style="color:var(--green); font-weight:600; margin-bottom:8px;">\u2705 Key Created! Save it now:</div>
+        <code id="newKeyValue" style="color:var(--accent); font-size:13px; word-break:break-all;"></code>
+        <div style="color:var(--red); font-size:11px; margin-top:8px;">\u26a0\ufe0f This key will NOT be shown again!</div>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
+        <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Close</button>
+        <button id="createKeyBtn" onclick="createApiKey()" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">Create</button>
+      </div>
+    </div>
+  `);
+}
+
+async function createApiKey() {
+  const name = document.getElementById('newKeyName').value.trim();
+  if (!name) { alert('Name is required'); return; }
+  const scopes = [];
+  if (document.getElementById('scopeChat').checked) scopes.push('chat');
+  if (document.getElementById('scopeFiles').checked) scopes.push('files');
+  if (document.getElementById('scopeAdmin').checked) scopes.push('admin');
+
+  const res = await fetch('/api/keys', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, scopes }),
+  });
+  const data = await res.json();
+  if (data.key) {
+    document.getElementById('newKeyResult').style.display = 'block';
+    document.getElementById('newKeyValue').textContent = data.key;
+    document.getElementById('createKeyBtn').disabled = true;
+    document.getElementById('createKeyBtn').textContent = 'Created';
+    loadApiKeys();
+  }
+}
+
+async function revokeApiKey(id, name) {
+  if (!confirm(`Revoke API key "${name}"? This action cannot be undone.`)) return;
+  await fetch(`/api/keys/${id}/revoke`, { method: 'POST' });
+  loadApiKeys();
 }
 
 // ============== Dashboard ==============
