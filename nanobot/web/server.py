@@ -334,19 +334,44 @@ async def ws_chat(websocket: WebSocket):
 
                 # Use session_key from client or default
                 session_key = data.get("session", f"web:{chat_id}")
+                employee_id = data.get("employee_id")  # optional: which employee to use
 
                 await manager.send_json(conn_id, {
                     "type": "thinking",
                     "content": "nanobot is thinking...",
                 })
 
-                await _bus.publish_inbound(InboundMessage(
+                # If employee specified, load its config for the agent
+                extra_context = {}
+                if employee_id:
+                    try:
+                        from nanobot.db.engine import get_db
+                        from nanobot.db.models import Employee
+                        from sqlalchemy import select
+                        async with get_db() as db:
+                            result = await db.execute(select(Employee).where(Employee.id == employee_id))
+                            emp = result.scalar_one_or_none()
+                            if emp and emp.is_active:
+                                extra_context = {
+                                    "employee_id": emp.id,
+                                    "employee_name": emp.name,
+                                    "system_prompt": emp.system_prompt,
+                                    "model": emp.model,
+                                }
+                                # Update employee message counter
+                                emp.total_messages = (emp.total_messages or 0) + 1
+                    except Exception as e:
+                        logger.warning("Failed to load employee {}: {}", employee_id, e)
+
+                msg = InboundMessage(
                     channel="web",
                     sender_id=conn_id,
                     chat_id=chat_id,
                     content=content,
                     session_key_override=session_key,
-                ))
+                    metadata=extra_context,
+                )
+                await _bus.publish_inbound(msg)
 
             elif msg_type == "ping":
                 await manager.send_json(conn_id, {"type": "pong"})
@@ -493,6 +518,47 @@ async def api_auth_logout(request: Request) -> JSONResponse:
     response = JSONResponse({"ok": True})
     response.delete_cookie("nonobot_token")
     return response
+
+
+async def api_auth_change_password(request: Request) -> JSONResponse:
+    """Change the current user's password."""
+    from nanobot.auth.jwt_auth import verify_password, hash_password
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User, AuditLog
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    if not user.get("sub"):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    old_password = body.get("old_password", "")
+    new_password = body.get("new_password", "")
+    if not old_password or not new_password:
+        return JSONResponse({"error": "old_password and new_password required"}, status_code=400)
+    if len(new_password) < 4:
+        return JSONResponse({"error": "password must be at least 4 characters"}, status_code=400)
+
+    async with get_db() as db:
+        result = await db.execute(select(User).where(User.id == user["sub"]))
+        db_user = result.scalar_one_or_none()
+        if not db_user:
+            return JSONResponse({"error": "user not found"}, status_code=404)
+        if not verify_password(old_password, db_user.password_hash):
+            return JSONResponse({"error": "incorrect current password"}, status_code=400)
+
+        db_user.password_hash = hash_password(new_password)
+        db.add(AuditLog(
+            user_id=db_user.id, username=db_user.username,
+            action="change_password", resource_type="user",
+            ip_address=request.client.host if request.client else None,
+        ))
+
+    return JSONResponse({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -690,6 +756,80 @@ async def api_audit_logs(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Stats API
+# ---------------------------------------------------------------------------
+
+async def api_stats(request: Request) -> JSONResponse:
+    """Aggregated statistics for the dashboard."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User, Employee, AuditLog
+    from sqlalchemy import select, func
+
+    async with get_db() as db:
+        user_count = await db.scalar(select(func.count()).select_from(User)) or 0
+        employee_count = await db.scalar(select(func.count()).select_from(Employee)) or 0
+        active_employees = await db.scalar(
+            select(func.count()).select_from(Employee).where(Employee.is_active == True)
+        ) or 0
+        total_messages = await db.scalar(
+            select(func.coalesce(func.sum(Employee.total_messages), 0)).select_from(Employee)
+        ) or 0
+        total_tokens = await db.scalar(
+            select(func.coalesce(func.sum(Employee.total_tokens), 0)).select_from(Employee)
+        ) or 0
+        audit_count = await db.scalar(select(func.count()).select_from(AuditLog)) or 0
+
+        # Recent audit activities (last 10)
+        recent = await db.execute(
+            select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(10)
+        )
+        recent_logs = recent.scalars().all()
+
+        # Employee stats breakdown
+        emp_result = await db.execute(
+            select(Employee).order_by(Employee.total_messages.desc())
+        )
+        employees = emp_result.scalars().all()
+
+    return JSONResponse({
+        "users": user_count,
+        "employees": employee_count,
+        "active_employees": active_employees,
+        "total_messages": total_messages,
+        "total_tokens": total_tokens,
+        "audit_entries": audit_count,
+        "connections": len(manager.active),
+        "sessions": len(_sessions.list_sessions()) if _sessions else 0,
+        "recent_activity": [{
+            "timestamp": l.timestamp.isoformat() if l.timestamp else None,
+            "username": l.username, "action": l.action,
+        } for l in recent_logs],
+        "employee_stats": [{
+            "name": e.name, "avatar": e.avatar or '🤖',
+            "messages": e.total_messages or 0,
+            "tokens": e.total_tokens or 0,
+            "is_active": e.is_active,
+        } for e in employees],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Settings API
+# ---------------------------------------------------------------------------
+
+async def api_settings_get(request: Request) -> JSONResponse:
+    """Get system settings (admin)."""
+    user = getattr(request.state, "user", {})
+    return JSONResponse({
+        "username": user.get("username"),
+        "role": user.get("role"),
+        "sandbox_path": str(_sandbox_root()) if _config else None,
+        "model": _agent_model,
+        "version": getattr(__import__('nanobot'), '__version__', '?'),
+    })
+
+
+# ---------------------------------------------------------------------------
 # DB Bootstrap: create default admin
 # ---------------------------------------------------------------------------
 
@@ -758,8 +898,11 @@ def create_app(
         Route("/api/auth/refresh", api_auth_refresh, methods=["POST"]),
         Route("/api/auth/logout", api_auth_logout, methods=["POST"]),
         Route("/api/auth/me", api_auth_me, methods=["GET"]),
+        Route("/api/auth/change-password", api_auth_change_password, methods=["POST"]),
         # API routes
         Route("/api/status", api_status),
+        Route("/api/stats", api_stats, methods=["GET"]),
+        Route("/api/settings", api_settings_get, methods=["GET"]),
         Route("/api/sessions", api_sessions),
         Route("/api/sessions/{key:path}", api_session_detail, methods=["GET"]),
         Route("/api/sessions/{key:path}/delete", api_delete_session, methods=["POST", "DELETE"]),

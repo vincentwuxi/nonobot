@@ -574,6 +574,9 @@ body {
       <div class="nav-item" data-panel="config" onclick="switchPanel('config')">
         <span class="icon">⚙️</span><span>Config</span>
       </div>
+      <div class="nav-item" data-panel="settings" onclick="switchPanel('settings')">
+        <span class="icon">👤</span><span>Profile</span>
+      </div>
       <div style="border-top:1px solid var(--border); margin-top:auto; padding-top:12px;">
         <div id="userInfo" style="display:none; padding:8px 16px; color:var(--text-secondary); font-size:12px;">👤 admin</div>
         <div class="nav-item" onclick="handleLogout()" style="color:var(--red);">
@@ -592,6 +595,9 @@ body {
         <h2>💬 Chat</h2>
         <span class="subtitle" id="modelLabel">Loading...</span>
         <div class="session-selector">
+          <select id="employeeSelect" onchange="switchEmployee()" style="padding:4px 8px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--accent-2); font-size:12px; cursor:pointer;">
+            <option value="">Default Agent</option>
+          </select>
           <select id="sessionSelect" onchange="switchSession()">
             <option value="web:default">Default Session</option>
           </select>
@@ -687,6 +693,34 @@ body {
       <div id="auditList" style="padding:20px;"></div>
     </div>
 
+    <!-- Settings Panel -->
+    <div class="panel" id="panel-settings">
+      <div class="panel-header">
+        <h2>👤 Profile & Settings</h2>
+        <span class="subtitle">Account Management</span>
+      </div>
+      <div style="padding:20px; max-width:600px;">
+        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:24px; margin-bottom:20px;">
+          <h3 style="color:var(--text-primary); margin-bottom:16px; font-size:16px;">🔐 Change Password</h3>
+          <div style="display:flex; flex-direction:column; gap:12px;">
+            <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Current Password</label>
+              <input id="settingsOldPw" type="password" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+            <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">New Password</label>
+              <input id="settingsNewPw" type="password" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+            <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Confirm New Password</label>
+              <input id="settingsConfirmPw" type="password" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+            <div id="settingsPwError" style="color:var(--red); font-size:13px; display:none;"></div>
+            <div id="settingsPwOk" style="color:var(--green); font-size:13px; display:none;"></div>
+            <button onclick="changePassword()" style="align-self:flex-start; padding:8px 20px; background:var(--accent); color:white; border:none; border-radius:var(--radius-sm); cursor:pointer; font-weight:600;">Update Password</button>
+          </div>
+        </div>
+        <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:24px;">
+          <h3 style="color:var(--text-primary); margin-bottom:16px; font-size:16px;">ℹ️ System Info</h3>
+          <div id="settingsInfo" style="color:var(--text-secondary); font-size:13px;">Loading...</div>
+        </div>
+      </div>
+    </div>
+
   </main>
 </div>
 
@@ -764,21 +798,40 @@ function updateConnStatus(online) {
 }
 
 // ============== Chat ==============
+let selectedEmployeeId = '';
+
 function sendMessage() {
   const input = document.getElementById('chatInput');
   const content = input.value.trim();
   if (!content || !connected || isThinking) return;
 
   addMessage('user', content);
-  ws.send(JSON.stringify({
+  const payload = {
     type: 'message',
     content: content,
     session: currentSession,
-  }));
+  };
+  if (selectedEmployeeId) payload.employee_id = selectedEmployeeId;
+  ws.send(JSON.stringify(payload));
 
   input.value = '';
   input.style.height = 'auto';
   disableInput();
+}
+
+function switchEmployee() {
+  const sel = document.getElementById('employeeSelect');
+  selectedEmployeeId = sel.value;
+}
+
+async function loadEmployeeSelector() {
+  try {
+    const res = await fetch('/api/employees');
+    const list = await res.json();
+    const sel = document.getElementById('employeeSelect');
+    sel.innerHTML = '<option value="">Default Agent</option>' + 
+      list.filter(e => e.is_active).map(e => `<option value="${e.id}">${e.avatar || '🤖'} ${e.name}</option>`).join('');
+  } catch (e) { console.error('loadEmployeeSelector:', e); }
 }
 
 function addMessage(role, content) {
@@ -890,17 +943,18 @@ function switchPanel(name) {
   if (name === 'employees') loadEmployees();
   if (name === 'users') loadUsers();
   if (name === 'audit') loadAudit();
+  if (name === 'settings') loadSettings();
 }
 
 // ============== Dashboard ==============
 async function loadDashboard() {
   try {
-    const [statusRes, modelsRes] = await Promise.all([
+    const [statusRes, statsRes] = await Promise.all([
       fetch('/api/status'),
-      fetch('/api/models'),
+      fetch('/api/stats'),
     ]);
     const status = await statusRes.json();
-    const models = await modelsRes.json();
+    const stats = await statsRes.json();
 
     document.getElementById('statsGrid').innerHTML = `
       <div class="stat-card">
@@ -911,35 +965,77 @@ async function loadDashboard() {
       <div class="stat-card">
         <div class="label">Model</div>
         <div class="value" style="font-size:16px">${status.model}</div>
-        <div class="sub">${models.available?.length || 0} available</div>
+        <div class="sub">Default LLM</div>
       </div>
       <div class="stat-card">
-        <div class="label">Connections</div>
-        <div class="value">${status.connections}</div>
-        <div class="sub">WebSocket clients</div>
+        <div class="label">👥 Users</div>
+        <div class="value">${stats.users}</div>
+        <div class="sub">registered</div>
       </div>
       <div class="stat-card">
-        <div class="label">Sessions</div>
-        <div class="value">${status.sessions}</div>
-        <div class="sub">Active sessions</div>
+        <div class="label">🤖 Employees</div>
+        <div class="value">${stats.active_employees} / ${stats.employees}</div>
+        <div class="sub">active / total</div>
       </div>
       <div class="stat-card">
-        <div class="label">Sandbox</div>
-        <div class="value" style="font-size:14px">${status.sandbox_restricted ? '🔒 Restricted' : '⚠️ Open'}</div>
-        <div class="sub">${status.sandbox || 'N/A'}</div>
+        <div class="label">💬 Messages</div>
+        <div class="value">${(stats.total_messages || 0).toLocaleString()}</div>
+        <div class="sub">all employees</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">🪙 Tokens</div>
+        <div class="value">${(stats.total_tokens || 0).toLocaleString()}</div>
+        <div class="sub">total consumed</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">🔌 Connections</div>
+        <div class="value">${stats.connections}</div>
+        <div class="sub">WebSocket</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">📋 Sessions</div>
+        <div class="value">${stats.sessions}</div>
+        <div class="sub">active</div>
       </div>
     `;
 
+    // Employee usage breakdown + recent activity
+    const empStats = (stats.employee_stats || []);
+    const recentAct = (stats.recent_activity || []);
+    const actionIcons = { login: '🔑', create_employee: '🤖', create_user: '👤', change_password: '🔐', update_employee: '✏️', delete_employee: '🗑' };
+
     document.getElementById('systemInfo').innerHTML = `
-      <h3>Available Models</h3>
-      <table class="info-table">
-        ${(models.available || []).map(m => `
-          <tr>
-            <td>${m === models.current ? '✓' : ''}</td>
-            <td>${m}</td>
-          </tr>
-        `).join('')}
-      </table>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+        <div>
+          <h3>🤖 Employee Usage</h3>
+          ${empStats.length ? `<table class="info-table">
+            <thead><tr><th></th><th>Name</th><th>Msgs</th><th>Tokens</th></tr></thead>
+            <tbody>
+              ${empStats.map(e => `
+                <tr>
+                  <td>${e.avatar}</td>
+                  <td>${e.name} ${e.is_active ? '' : '<span style="color:var(--red);font-size:10px;">disabled</span>'}</td>
+                  <td>${(e.messages || 0).toLocaleString()}</td>
+                  <td>${(e.tokens || 0).toLocaleString()}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>` : '<div style="color:var(--text-muted);padding:12px;">No employees yet</div>'}
+        </div>
+        <div>
+          <h3>📋 Recent Activity</h3>
+          ${recentAct.length ? `<div style="display:flex;flex-direction:column;gap:8px;">
+            ${recentAct.map(a => `
+              <div style="display:flex;align-items:center;gap:10px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--border);">
+                <span>${actionIcons[a.action] || '📋'}</span>
+                <span style="color:var(--text-primary);">${a.username || '—'}</span>
+                <span style="color:var(--text-muted);">${a.action}</span>
+                <span style="margin-left:auto;color:var(--text-muted);font-size:11px;">${a.timestamp ? new Date(a.timestamp).toLocaleString() : ''}</span>
+              </div>
+            `).join('')}
+          </div>` : '<div style="color:var(--text-muted);padding:12px;">No activity yet</div>'}
+        </div>
+      </div>
     `;
   } catch (e) {
     document.getElementById('statsGrid').innerHTML = `<p style="color:var(--red)">Failed to load: ${e.message}</p>`;
@@ -1486,6 +1582,52 @@ async function loadAudit() {
 }
 
 // ============== Panel Switch Hook ==============
+// ============== Settings ==============
+async function changePassword() {
+  const errDiv = document.getElementById('settingsPwError');
+  const okDiv = document.getElementById('settingsPwOk');
+  errDiv.style.display = 'none';
+  okDiv.style.display = 'none';
+
+  const oldPw = document.getElementById('settingsOldPw').value;
+  const newPw = document.getElementById('settingsNewPw').value;
+  const confirmPw = document.getElementById('settingsConfirmPw').value;
+
+  if (!oldPw || !newPw) { errDiv.textContent = 'All fields are required'; errDiv.style.display = 'block'; return; }
+  if (newPw !== confirmPw) { errDiv.textContent = 'New passwords do not match'; errDiv.style.display = 'block'; return; }
+  if (newPw.length < 4) { errDiv.textContent = 'Password must be at least 4 characters'; errDiv.style.display = 'block'; return; }
+
+  try {
+    const res = await fetch('/api/auth/change-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_password: oldPw, new_password: newPw }),
+    });
+    const data = await res.json();
+    if (!res.ok) { errDiv.textContent = data.error || 'Failed'; errDiv.style.display = 'block'; return; }
+    okDiv.textContent = '✅ Password updated successfully!';
+    okDiv.style.display = 'block';
+    document.getElementById('settingsOldPw').value = '';
+    document.getElementById('settingsNewPw').value = '';
+    document.getElementById('settingsConfirmPw').value = '';
+  } catch (e) { errDiv.textContent = 'Connection error'; errDiv.style.display = 'block'; }
+}
+
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    const data = await res.json();
+    document.getElementById('settingsInfo').innerHTML = `
+      <div style="display:grid; grid-template-columns:120px 1fr; gap:8px;">
+        <span style="color:var(--text-muted);">Username:</span><span style="color:var(--text-primary);">${data.username || '—'}</span>
+        <span style="color:var(--text-muted);">Role:</span><span style="color:var(--accent-2);">${data.role || '—'}</span>
+        <span style="color:var(--text-muted);">Model:</span><span style="color:var(--text-primary);">${data.model || '—'}</span>
+        <span style="color:var(--text-muted);">Version:</span><span style="color:var(--text-primary);">${data.version || '—'}</span>
+        <span style="color:var(--text-muted);">Sandbox:</span><span style="color:var(--text-primary); word-break:break-all; font-size:12px;">${data.sandbox_path || '—'}</span>
+      </div>
+    `;
+  } catch (e) { console.error('loadSettings:', e); }
+}
+
 const _origSwitchPanel = typeof switchPanel === 'function' ? switchPanel : null;
 
 // ============== Auth ==============
@@ -1548,6 +1690,7 @@ async function initApp() {
 
   connectWS();
   initFileHandlers();
+  loadEmployeeSelector();
 
   // Auto-resize textarea
   const input = document.getElementById('chatInput');
