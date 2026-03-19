@@ -18,6 +18,48 @@
 
 📏 Real-time line count: run `bash core_agent_lines.sh` to verify anytime.
 
+## 🏢 Enterprise Digital Employee Platform (v1.0)
+
+> This fork extends nanobot into an **enterprise-grade digital employee platform** with full-featured web management console.
+
+### ✨ Enterprise Features
+
+| Feature | Description |
+|---------|-------------|
+| 🔐 **JWT Authentication** | Login/logout, session management, password change |
+| 🤖 **Digital Employees** | Create AI employees with custom persona, model, and tools |
+| 👥 **User Management** | RBAC with 5-level role hierarchy (superadmin → guest) |
+| 📊 **Dashboard** | Real-time stats — users, employees, messages, tokens |
+| 📋 **Audit Logs** | IP masking, sensitive field sanitization |
+| 📈 **Token Quotas** | Daily/monthly limits per user with progress tracking |
+| 🔑 **API Keys** | Create/revoke keys with scope-based authorization |
+| 🌐 **External API** | `POST /api/v1/chat` · `POST /api/v1/webhook` · `GET /api/v1/employees` |
+| 💬 **Web Chat** | Real-time WebSocket chat with employee selector |
+| 📁 **File Manager** | Sandbox file system with upload/download/mkdir |
+
+### 🚀 Quick Start (Enterprise Mode)
+
+```bash
+# Install
+git clone https://github.com/vincentwuxi/nonobot.git
+cd nonobot
+pip install -e .
+
+# Configure LLM provider (add API key to ~/.nanobot/config.json)
+nanobot onboard
+
+# Start the web console
+nanobot gateway
+# Open http://localhost:18790
+# Default login: admin / admin
+```
+
+### 📖 API Reference
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full list of 18 API endpoints.
+
+---
+
 ## 📢 News
 
 - **2026-03-15** 🧩 DingTalk rich media, smarter built-in skills, and cleaner model compatibility.
