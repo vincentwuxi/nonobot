@@ -129,17 +129,37 @@ _由 `/blueprint` 或 `/forge` 自动填充_
 > **注意**: 此部分由 `/genesis` 维护。
 
 ```text
-src/
-└── anws/
-    ├── bin/cli.js
-    ├── lib/ (init, update, diff, changelog, copy, manifest, ...)
-    └── templates/
-        ├── .agents/   (内部 canonical 模板源，经 projection 投放到各 target)
-        └── AGENTS.md
-
-.anws/
-├── changelog/         (升级记录)
-└── v{N}/              (当前架构文档)
+nonobot/
+├── AGENTS.md           (AI 锚文件 — ANWS + Superpowers 融合)
+├── README.md           (nanobot 原始 README)
+├── pyproject.toml      (Python 项目配置)
+├── LICENSE             (MIT)
+│
+├── .agents/            (ANWS + Superpowers 技能和工作流)
+│   ├── workflows/      (12 + 1 个工作流，含 forge-enhanced.md)
+│   └── skills/         (12 ANWS + 4 Superpowers Skills)
+│
+├── .anws/              (版本化架构文档)
+│   ├── changelog/
+│   └── v{N}/
+│
+├── nanobot/            (🧠 核心源码 — 改造目标)
+│   ├── agent/          (核心代理逻辑: loop, context, memory, skills, subagent, tools/)
+│   ├── channels/       (聊天平台: Telegram, Discord, Slack, QQ, 飞书, Matrix, WeCom...)
+│   ├── providers/      (LLM 提供商: OpenRouter, Anthropic, OpenAI, DeepSeek, Gemini...)
+│   ├── skills/         (内置技能: github, weather, tmux...)
+│   ├── bus/            (消息路由)
+│   ├── cron/           (定时任务)
+│   ├── heartbeat/      (心跳唤醒)
+│   ├── session/        (会话管理)
+│   ├── config/         (配置管理)
+│   ├── security/       (安全沙箱)
+│   ├── cli/            (CLI 命令)
+│   ├── utils/          (工具函数)
+│   └── templates/      (模板)
+│
+├── bridge/             (外部集成桥接)
+└── .venv/              (Python 虚拟环境)
 ```
 
 ---
