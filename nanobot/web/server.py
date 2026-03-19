@@ -381,6 +381,361 @@ async def spa_fallback(request: Request) -> HTMLResponse:
 
 
 # ---------------------------------------------------------------------------
+# Auth API endpoints
+# ---------------------------------------------------------------------------
+
+async def api_auth_login(request: Request) -> JSONResponse:
+    """Login with username/password, return JWT tokens."""
+    from nanobot.auth.jwt_auth import verify_password, create_access_token, create_refresh_token
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User, AuditLog
+    from sqlalchemy import select
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+
+    if not username or not password:
+        return JSONResponse({"error": "username and password required"}, status_code=400)
+
+    async with get_db() as db:
+        result = await db.execute(select(User).where(User.username == username))
+        user = result.scalar_one_or_none()
+
+        if not user or not verify_password(password, user.password_hash):
+            return JSONResponse({"error": "invalid credentials"}, status_code=401)
+
+        if not user.is_active:
+            return JSONResponse({"error": "account disabled"}, status_code=403)
+
+        # Update last login
+        from datetime import datetime
+        user.last_login_at = datetime.now()
+
+        # Audit log
+        db.add(AuditLog(
+            user_id=user.id, username=user.username,
+            action="login", resource_type="user",
+            ip_address=request.client.host if request.client else None,
+        ))
+
+        access_token = create_access_token(user.id, user.username, user.role)
+        refresh_token = create_refresh_token(user.id)
+
+    response = JSONResponse({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "display_name": user.display_name,
+            "role": user.role,
+            "avatar": user.avatar,
+        },
+    })
+    response.set_cookie(
+        "nonobot_token", access_token,
+        httponly=True, samesite="lax", max_age=86400,
+    )
+    return response
+
+
+async def api_auth_refresh(request: Request) -> JSONResponse:
+    """Refresh access token using a refresh token."""
+    from nanobot.auth.jwt_auth import decode_token, create_access_token
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User
+    from sqlalchemy import select
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    refresh_token = body.get("refresh_token", "")
+    payload = decode_token(refresh_token)
+    if not payload or payload.get("type") != "refresh":
+        return JSONResponse({"error": "invalid refresh token"}, status_code=401)
+
+    async with get_db() as db:
+        result = await db.execute(select(User).where(User.id == payload["sub"]))
+        user = result.scalar_one_or_none()
+        if not user or not user.is_active:
+            return JSONResponse({"error": "user not found"}, status_code=401)
+
+    access_token = create_access_token(user.id, user.username, user.role)
+    response = JSONResponse({"access_token": access_token})
+    response.set_cookie(
+        "nonobot_token", access_token,
+        httponly=True, samesite="lax", max_age=86400,
+    )
+    return response
+
+
+async def api_auth_me(request: Request) -> JSONResponse:
+    """Get current user info."""
+    user = getattr(request.state, "user", None)
+    if not user:
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    return JSONResponse({
+        "id": user.get("sub"),
+        "username": user.get("username"),
+        "role": user.get("role"),
+    })
+
+
+async def api_auth_logout(request: Request) -> JSONResponse:
+    """Logout — clear the auth cookie."""
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("nonobot_token")
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Employee (Digital Worker) API
+# ---------------------------------------------------------------------------
+
+async def api_employees_list(request: Request) -> JSONResponse:
+    """List all digital employees."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee
+    from sqlalchemy import select
+
+    async with get_db() as db:
+        result = await db.execute(select(Employee).order_by(Employee.created_at.desc()))
+        employees = result.scalars().all()
+
+    return JSONResponse([{
+        "id": e.id, "name": e.name, "slug": e.slug, "avatar": e.avatar,
+        "description": e.description, "model": e.model, "is_active": e.is_active,
+        "tools": e.tools, "skills": e.skills, "channels": e.channels,
+        "total_tokens": e.total_tokens, "total_messages": e.total_messages,
+    } for e in employees])
+
+
+async def api_employees_create(request: Request) -> JSONResponse:
+    """Create a new digital employee."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee, AuditLog
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    name = body.get("name", "").strip()
+    slug = body.get("slug", "").strip().lower().replace(" ", "-")
+    if not name or not slug:
+        return JSONResponse({"error": "name and slug required"}, status_code=400)
+
+    async with get_db() as db:
+        employee = Employee(
+            name=name, slug=slug,
+            avatar=body.get("avatar", "🤖"),
+            description=body.get("description"),
+            system_prompt=body.get("system_prompt"),
+            model=body.get("model"),
+            provider=body.get("provider"),
+            temperature=body.get("temperature", 0.1),
+            max_tokens=body.get("max_tokens", 8192),
+            tools=body.get("tools", []),
+            skills=body.get("skills", []),
+            channels=body.get("channels", []),
+        )
+        db.add(employee)
+        user = getattr(request.state, "user", {})
+        db.add(AuditLog(
+            user_id=user.get("sub"), username=user.get("username"),
+            action="create_employee", resource_type="employee",
+            detail={"name": name, "slug": slug},
+        ))
+
+    return JSONResponse({"id": employee.id, "name": employee.name, "slug": employee.slug}, status_code=201)
+
+
+async def api_employees_update(request: Request) -> JSONResponse:
+    """Update a digital employee."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee
+    from sqlalchemy import select
+
+    emp_id = request.path_params["id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    async with get_db() as db:
+        result = await db.execute(select(Employee).where(Employee.id == emp_id))
+        employee = result.scalar_one_or_none()
+        if not employee:
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+        for field in ("name", "avatar", "description", "system_prompt", "model",
+                      "provider", "temperature", "max_tokens", "tools", "skills",
+                      "channels", "knowledge_bases", "is_active", "settings"):
+            if field in body:
+                setattr(employee, field, body[field])
+
+    return JSONResponse({"ok": True})
+
+
+async def api_employees_delete(request: Request) -> JSONResponse:
+    """Delete a digital employee."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import Employee
+    from sqlalchemy import select
+
+    emp_id = request.path_params["id"]
+    async with get_db() as db:
+        result = await db.execute(select(Employee).where(Employee.id == emp_id))
+        employee = result.scalar_one_or_none()
+        if not employee:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        await db.delete(employee)
+
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Users API (admin)
+# ---------------------------------------------------------------------------
+
+async def api_users_list(request: Request) -> JSONResponse:
+    """List all users (admin only)."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    if user.get("role") not in ("superadmin", "org_admin"):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    async with get_db() as db:
+        result = await db.execute(select(User).order_by(User.created_at.desc()))
+        users = result.scalars().all()
+
+    return JSONResponse([{
+        "id": u.id, "username": u.username, "display_name": u.display_name,
+        "email": u.email, "role": u.role, "is_active": u.is_active,
+        "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+    } for u in users])
+
+
+async def api_users_create(request: Request) -> JSONResponse:
+    """Create a new user (admin only)."""
+    from nanobot.auth.jwt_auth import hash_password
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User
+
+    user = getattr(request.state, "user", {})
+    if user.get("role") not in ("superadmin", "org_admin"):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+    if not username or not password:
+        return JSONResponse({"error": "username and password required"}, status_code=400)
+
+    async with get_db() as db:
+        new_user = User(
+            username=username,
+            password_hash=hash_password(password),
+            display_name=body.get("display_name", username),
+            email=body.get("email"),
+            role=body.get("role", "member"),
+        )
+        db.add(new_user)
+
+    return JSONResponse({"id": new_user.id, "username": new_user.username}, status_code=201)
+
+
+# ---------------------------------------------------------------------------
+# Audit API
+# ---------------------------------------------------------------------------
+
+async def api_audit_logs(request: Request) -> JSONResponse:
+    """List recent audit logs (admin only)."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import AuditLog
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    if user.get("role") not in ("superadmin", "org_admin"):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+
+    limit = int(request.query_params.get("limit", "50"))
+    async with get_db() as db:
+        result = await db.execute(
+            select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
+        )
+        logs = result.scalars().all()
+
+    return JSONResponse([{
+        "id": l.id, "timestamp": l.timestamp.isoformat() if l.timestamp else None,
+        "username": l.username, "action": l.action,
+        "resource_type": l.resource_type, "resource_id": l.resource_id,
+        "detail": l.detail, "ip_address": l.ip_address,
+    } for l in logs])
+
+
+# ---------------------------------------------------------------------------
+# DB Bootstrap: create default admin
+# ---------------------------------------------------------------------------
+
+async def ensure_default_admin():
+    """Create the default admin user if no users exist."""
+    from nanobot.auth.jwt_auth import hash_password
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User, Organization
+    from sqlalchemy import select, func
+
+    async with get_db() as db:
+        count = await db.scalar(select(func.count()).select_from(User))
+        if count and count > 0:
+            return
+
+        # Create default org
+        org = Organization(name="default", display_name="Default Organization")
+        db.add(org)
+        await db.flush()
+
+        # Create admin user (password: admin — should be changed!)
+        admin = User(
+            username="admin",
+            password_hash=hash_password("admin"),
+            display_name="Administrator",
+            role="superadmin",
+            org_id=org.id,
+        )
+        db.add(admin)
+        logger.info("Created default admin user (username: admin, password: admin)")
+
+        # Create default digital employee
+        from nanobot.db.models import Employee
+        employee = Employee(
+            name="General Assistant",
+            slug="assistant",
+            avatar="🤖",
+            description="Default AI assistant",
+            tools=["read_file", "write_file", "edit_file", "list_dir", "exec",
+                   "web_search", "web_fetch", "message", "cron"],
+        )
+        db.add(employee)
+        logger.info("Created default digital employee: General Assistant")
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
@@ -398,6 +753,11 @@ def create_app(
     _agent_model = model
 
     routes = [
+        # Auth routes (public)
+        Route("/api/auth/login", api_auth_login, methods=["POST"]),
+        Route("/api/auth/refresh", api_auth_refresh, methods=["POST"]),
+        Route("/api/auth/logout", api_auth_logout, methods=["POST"]),
+        Route("/api/auth/me", api_auth_me, methods=["GET"]),
         # API routes
         Route("/api/status", api_status),
         Route("/api/sessions", api_sessions),
@@ -411,6 +771,16 @@ def create_app(
         Route("/api/files/download", api_files_download, methods=["GET"]),
         Route("/api/files/delete", api_files_delete, methods=["POST"]),
         Route("/api/files/mkdir", api_files_mkdir, methods=["POST"]),
+        # Employee (Digital Worker) API
+        Route("/api/employees", api_employees_list, methods=["GET"]),
+        Route("/api/employees", api_employees_create, methods=["POST"]),
+        Route("/api/employees/{id}", api_employees_update, methods=["PUT", "PATCH"]),
+        Route("/api/employees/{id}", api_employees_delete, methods=["DELETE"]),
+        # Users API (admin)
+        Route("/api/users", api_users_list, methods=["GET"]),
+        Route("/api/users", api_users_create, methods=["POST"]),
+        # Audit API
+        Route("/api/audit", api_audit_logs, methods=["GET"]),
         # WebSocket
         WebSocketRoute("/ws", ws_chat),
         # Static files
@@ -420,8 +790,13 @@ def create_app(
         Route("/", spa_fallback),
     ]
 
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from nanobot.auth.middleware import auth_middleware
+
     middleware = [
         Middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]),
+        Middleware(BaseHTTPMiddleware, dispatch=auth_middleware),
     ]
 
     return Starlette(routes=routes, middleware=middleware)
+

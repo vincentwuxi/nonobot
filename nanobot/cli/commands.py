@@ -615,6 +615,13 @@ def gateway(
     async def run():
         import uvicorn
 
+        # --- Database Initialization (must be async) ---
+        from nanobot.db.engine import init_engine, close_engine
+        from nanobot.web.server import ensure_default_admin
+        await init_engine()
+        await ensure_default_admin()
+        console.print("[green]✓[/green] Database initialized")
+
         uvi_config = uvicorn.Config(
             web_app,
             host=config.gateway.host,
@@ -643,6 +650,7 @@ def gateway(
             cron.stop()
             agent.stop()
             await channels.stop_all()
+            await close_engine()
 
     asyncio.run(run())
 

@@ -503,7 +503,40 @@ body {
 </style>
 </head>
 <body>
-<div id="app">
+
+<!-- Login Page -->
+<div id="loginPage" style="display:none; position:fixed; inset:0; z-index:9999; background:var(--bg-primary); display:flex; align-items:center; justify-content:center;">
+  <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:16px; padding:48px; width:400px; max-width:90vw; box-shadow:var(--shadow); backdrop-filter:blur(20px);">
+    <div style="text-align:center; margin-bottom:32px;">
+      <div style="font-size:48px; margin-bottom:8px;">🐈</div>
+      <h1 style="color:var(--text-primary); font-size:24px; font-weight:700;">NonoBot</h1>
+      <p style="color:var(--text-secondary); font-size:14px; margin-top:4px;">Enterprise Digital Employee Platform</p>
+    </div>
+    <form id="loginForm" onsubmit="handleLogin(event)">
+      <div style="margin-bottom:16px;">
+        <label style="display:block; color:var(--text-secondary); font-size:13px; margin-bottom:6px;">Username</label>
+        <input id="loginUsername" type="text" required autocomplete="username"
+          style="width:100%; padding:10px 14px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px; outline:none; transition:var(--transition);"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"
+        >
+      </div>
+      <div style="margin-bottom:24px;">
+        <label style="display:block; color:var(--text-secondary); font-size:13px; margin-bottom:6px;">Password</label>
+        <input id="loginPassword" type="password" required autocomplete="current-password"
+          style="width:100%; padding:10px 14px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px; outline:none; transition:var(--transition);"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"
+        >
+      </div>
+      <div id="loginError" style="color:var(--red); font-size:13px; margin-bottom:12px; display:none;"></div>
+      <button type="submit" id="loginBtn"
+        style="width:100%; padding:12px; background:var(--accent); color:white; border:none; border-radius:var(--radius-sm); font-size:15px; font-weight:600; cursor:pointer; transition:var(--transition);"
+        onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'"
+      >Sign In</button>
+    </form>
+  </div>
+</div>
+
+<div id="app" style="display:none;">
   <!-- Sidebar -->
   <aside class="sidebar">
     <div class="sidebar-header">
@@ -529,6 +562,12 @@ body {
       <div class="nav-label">Settings</div>
       <div class="nav-item" data-panel="config" onclick="switchPanel('config')">
         <span class="icon">⚙️</span><span>Config</span>
+      </div>
+      <div style="border-top:1px solid var(--border); margin-top:auto; padding-top:12px;">
+        <div id="userInfo" style="display:none; padding:8px 16px; color:var(--text-secondary); font-size:12px;">👤 admin</div>
+        <div class="nav-item" onclick="handleLogout()" style="color:var(--red);">
+          <span class="icon">🚪</span><span>Logout</span>
+        </div>
       </div>
     </nav>
   </aside>
@@ -1138,8 +1177,64 @@ function initFileHandlers() {
   });
 }
 
+// ============== Auth ==============
+let currentUser = null;
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById('loginBtn');
+  const errDiv = document.getElementById('loginError');
+  btn.textContent = 'Signing in...';
+  btn.disabled = true;
+  errDiv.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('loginUsername').value,
+        password: document.getElementById('loginPassword').value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errDiv.textContent = data.error || 'Login failed';
+      errDiv.style.display = 'block';
+      return;
+    }
+    currentUser = data.user;
+    showApp();
+  } catch (err) {
+    errDiv.textContent = 'Connection failed';
+    errDiv.style.display = 'block';
+  } finally {
+    btn.textContent = 'Sign In';
+    btn.disabled = false;
+  }
+}
+
+async function handleLogout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  currentUser = null;
+  if (ws) ws.close();
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('loginPage').style.display = 'flex';
+}
+
+function showApp() {
+  document.getElementById('loginPage').style.display = 'none';
+  document.getElementById('app').style.display = '';
+  initApp();
+}
+
 // ============== Init ==============
-async function init() {
+let _appInitialized = false;
+
+async function initApp() {
+  if (_appInitialized) return;
+  _appInitialized = true;
+
   connectWS();
   initFileHandlers();
 
@@ -1164,6 +1259,15 @@ async function init() {
     document.getElementById('modelLabel').textContent = '🤖 ' + data.model;
   } catch (e) {}
 
+  // Show user info in sidebar
+  if (currentUser) {
+    const userEl = document.getElementById('userInfo');
+    if (userEl) {
+      userEl.textContent = `${currentUser.display_name || currentUser.username}`;
+      userEl.style.display = 'block';
+    }
+  }
+
   // Keepalive ping
   setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1172,7 +1276,21 @@ async function init() {
   }, 30000);
 }
 
-init();
+// Boot: check auth status
+(async function boot() {
+  try {
+    const res = await fetch('/api/auth/me');
+    if (res.ok) {
+      currentUser = await res.json();
+      showApp();
+    } else {
+      document.getElementById('loginPage').style.display = 'flex';
+    }
+  } catch {
+    document.getElementById('loginPage').style.display = 'flex';
+  }
+})();
 </script>
 </body>
 </html>
+
