@@ -559,6 +559,17 @@ body {
         <span class="icon">📁</span><span>Files</span>
       </div>
       <div class="nav-divider"></div>
+      <div class="nav-label">Admin</div>
+      <div class="nav-item" data-panel="employees" onclick="switchPanel('employees')">
+        <span class="icon">🤖</span><span>Employees</span>
+      </div>
+      <div class="nav-item" data-panel="users" onclick="switchPanel('users')">
+        <span class="icon">👥</span><span>Users</span>
+      </div>
+      <div class="nav-item" data-panel="audit" onclick="switchPanel('audit')">
+        <span class="icon">📜</span><span>Audit</span>
+      </div>
+      <div class="nav-divider"></div>
       <div class="nav-label">Settings</div>
       <div class="nav-item" data-panel="config" onclick="switchPanel('config')">
         <span class="icon">⚙️</span><span>Config</span>
@@ -647,7 +658,42 @@ body {
       <div class="config-content" id="configContent"></div>
     </div>
 
+    <!-- Employees Panel -->
+    <div class="panel" id="panel-employees">
+      <div class="panel-header">
+        <h2>🤖 Digital Employees</h2>
+        <span class="subtitle" id="employeeCount">Loading...</span>
+        <button onclick="showCreateEmployeeModal()" style="margin-left:auto; padding:6px 14px; background:var(--accent); color:white; border:none; border-radius:var(--radius-sm); cursor:pointer; font-size:13px;">+ New Employee</button>
+      </div>
+      <div id="employeesList" style="padding:20px; display:grid; grid-template-columns:repeat(auto-fill, minmax(320px, 1fr)); gap:16px;"></div>
+    </div>
+
+    <!-- Users Panel -->
+    <div class="panel" id="panel-users">
+      <div class="panel-header">
+        <h2>👥 Users</h2>
+        <span class="subtitle" id="userCount">Loading...</span>
+        <button onclick="showCreateUserModal()" style="margin-left:auto; padding:6px 14px; background:var(--accent); color:white; border:none; border-radius:var(--radius-sm); cursor:pointer; font-size:13px;">+ New User</button>
+      </div>
+      <div id="usersList" style="padding:20px;"></div>
+    </div>
+
+    <!-- Audit Panel -->
+    <div class="panel" id="panel-audit">
+      <div class="panel-header">
+        <h2>📜 Audit Log</h2>
+        <span class="subtitle">Recent Activity</span>
+      </div>
+      <div id="auditList" style="padding:20px;"></div>
+    </div>
+
   </main>
+</div>
+
+<!-- Modal Overlay -->
+<div id="modalOverlay" style="display:none; position:fixed; inset:0; z-index:8000; background:rgba(0,0,0,0.6); display:none; align-items:center; justify-content:center;">
+  <div id="modalContent" style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:16px; padding:32px; width:500px; max-width:90vw; max-height:80vh; overflow-y:auto; box-shadow:var(--shadow);"></div>
+</div>
 </div>
 
 <script>
@@ -841,6 +887,9 @@ function switchPanel(name) {
   if (name === 'sessions') loadSessions();
   if (name === 'files') loadFiles();
   if (name === 'config') loadConfig();
+  if (name === 'employees') loadEmployees();
+  if (name === 'users') loadUsers();
+  if (name === 'audit') loadAudit();
 }
 
 // ============== Dashboard ==============
@@ -1176,6 +1225,268 @@ function initFileHandlers() {
     if (e.target.files.length) { uploadFiles(e.target.files); e.target.value = ''; }
   });
 }
+
+// ============== Modal ==============
+function showModal(html) {
+  const overlay = document.getElementById('modalOverlay');
+  document.getElementById('modalContent').innerHTML = html;
+  overlay.style.display = 'flex';
+  overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
+}
+function closeModal() { document.getElementById('modalOverlay').style.display = 'none'; }
+
+// ============== Employees ==============
+async function loadEmployees() {
+  try {
+    const res = await fetch('/api/employees');
+    const list = await res.json();
+    document.getElementById('employeeCount').textContent = `${list.length} employee(s)`;
+    const grid = document.getElementById('employeesList');
+    if (!list.length) {
+      grid.innerHTML = '<div style="color:var(--text-muted); padding:40px; text-align:center;">No digital employees yet. Click "+ New Employee" to create one.</div>';
+      return;
+    }
+    grid.innerHTML = list.map(e => `
+      <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:20px; transition:var(--transition);">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+          <span style="font-size:32px;">${e.avatar || '🤖'}</span>
+          <div>
+            <div style="font-weight:600; color:var(--text-primary); font-size:15px;">${e.name}</div>
+            <div style="color:var(--text-muted); font-size:12px;">@${e.slug}</div>
+          </div>
+          <span style="margin-left:auto; padding:3px 10px; border-radius:12px; font-size:11px; background:${e.is_active ? 'rgba(52,211,153,0.15)' : 'rgba(248,113,113,0.15)'}; color:${e.is_active ? 'var(--green)' : 'var(--red)'};">${e.is_active ? 'Active' : 'Disabled'}</span>
+        </div>
+        <div style="color:var(--text-secondary); font-size:13px; margin-bottom:12px;">${e.description || 'No description'}</div>
+        <div style="display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px;">
+          ${(e.tools || []).slice(0, 5).map(t => `<span style="padding:2px 8px; background:var(--bg-glass); border:1px solid var(--border); border-radius:4px; font-size:11px; color:var(--text-muted);">${t}</span>`).join('')}
+          ${(e.tools || []).length > 5 ? `<span style="color:var(--text-muted); font-size:11px;">+${e.tools.length - 5} more</span>` : ''}
+        </div>
+        <div style="display:flex; gap:6px; font-size:11px; color:var(--text-muted); margin-bottom:14px;">
+          <span>💬 ${e.total_messages || 0} msgs</span>
+          <span>🪙 ${(e.total_tokens || 0).toLocaleString()} tokens</span>
+          ${e.model ? `<span>🧠 ${e.model}</span>` : ''}
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button onclick="editEmployee('${e.id}')" style="flex:1; padding:6px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer; font-size:12px;">✏️ Edit</button>
+          <button onclick="toggleEmployee('${e.id}', ${e.is_active})" style="flex:1; padding:6px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:${e.is_active ? 'var(--orange)' : 'var(--green)'}; cursor:pointer; font-size:12px;">${e.is_active ? '⏸ Disable' : '▶ Enable'}</button>
+          <button onclick="deleteEmployee('${e.id}', '${e.name}')" style="padding:6px 10px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--red); cursor:pointer; font-size:12px;">🗑</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) { console.error('loadEmployees:', e); }
+}
+
+function showCreateEmployeeModal() {
+  showModal(`
+    <h3 style="color:var(--text-primary); margin-bottom:20px;">🤖 New Digital Employee</h3>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Name *</label>
+        <input id="empName" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;" placeholder="e.g. Finance Assistant"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Slug *</label>
+        <input id="empSlug" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;" placeholder="e.g. finance-assistant"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Avatar Emoji</label>
+        <input id="empAvatar" value="🤖" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Description</label>
+        <textarea id="empDesc" rows="2" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px; resize:vertical;" placeholder="What does this employee do?"></textarea></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">System Prompt</label>
+        <textarea id="empPrompt" rows="3" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px; resize:vertical;" placeholder="You are a helpful assistant for..."></textarea></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Model (optional)</label>
+        <input id="empModel" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;" placeholder="e.g. anthropic/claude-sonnet-4"></div>
+      <div id="empError" style="color:var(--red); font-size:13px; display:none;"></div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
+        <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Cancel</button>
+        <button onclick="createEmployee()" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">Create</button>
+      </div>
+    </div>
+  `);
+  document.getElementById('empName').addEventListener('input', (e) => {
+    document.getElementById('empSlug').value = e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  });
+}
+
+async function createEmployee() {
+  const errDiv = document.getElementById('empError');
+  const name = document.getElementById('empName').value.trim();
+  const slug = document.getElementById('empSlug').value.trim();
+  if (!name || !slug) { errDiv.textContent = 'Name and slug are required'; errDiv.style.display = 'block'; return; }
+  try {
+    const res = await fetch('/api/employees', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name, slug,
+        avatar: document.getElementById('empAvatar').value || '🤖',
+        description: document.getElementById('empDesc').value,
+        system_prompt: document.getElementById('empPrompt').value,
+        model: document.getElementById('empModel').value || null,
+        tools: ['read_file', 'write_file', 'edit_file', 'list_dir', 'exec', 'web_search', 'web_fetch', 'message'],
+      }),
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+    closeModal();
+    loadEmployees();
+  } catch (e) { errDiv.textContent = e.message; errDiv.style.display = 'block'; }
+}
+
+async function editEmployee(id) {
+  // Fetch current data via list (simple approach)
+  const res = await fetch('/api/employees');
+  const list = await res.json();
+  const emp = list.find(e => e.id === id);
+  if (!emp) return;
+
+  showModal(`
+    <h3 style="color:var(--text-primary); margin-bottom:20px;">✏️ Edit: ${emp.name}</h3>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Name</label>
+        <input id="editEmpName" value="${emp.name}" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Avatar</label>
+        <input id="editEmpAvatar" value="${emp.avatar || '🤖'}" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Description</label>
+        <textarea id="editEmpDesc" rows="2" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px; resize:vertical;">${emp.description || ''}</textarea></div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
+        <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Cancel</button>
+        <button onclick="saveEmployee('${id}')" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">Save</button>
+      </div>
+    </div>
+  `);
+}
+
+async function saveEmployee(id) {
+  await fetch(`/api/employees/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: document.getElementById('editEmpName').value,
+      avatar: document.getElementById('editEmpAvatar').value,
+      description: document.getElementById('editEmpDesc').value,
+    }),
+  });
+  closeModal(); loadEmployees();
+}
+
+async function toggleEmployee(id, isActive) {
+  await fetch(`/api/employees/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ is_active: !isActive }),
+  });
+  loadEmployees();
+}
+
+async function deleteEmployee(id, name) {
+  if (!confirm(`Delete employee "${name}"? This cannot be undone.`)) return;
+  await fetch(`/api/employees/${id}`, { method: 'DELETE' });
+  loadEmployees();
+}
+
+// ============== Users ==============
+async function loadUsers() {
+  try {
+    const res = await fetch('/api/users');
+    if (res.status === 403) {
+      document.getElementById('usersList').innerHTML = '<div style="color:var(--text-muted); padding:40px; text-align:center;">🔒 Admin access required</div>';
+      return;
+    }
+    const list = await res.json();
+    document.getElementById('userCount').textContent = `${list.length} user(s)`;
+    const roleColors = { superadmin: 'var(--red)', org_admin: 'var(--orange)', team_lead: 'var(--accent-2)', member: 'var(--text-secondary)', guest: 'var(--text-muted)' };
+    document.getElementById('usersList').innerHTML = `
+      <table style="width:100%; border-collapse:collapse;">
+        <thead><tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">User</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Role</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Status</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Last Login</th>
+        </tr></thead>
+        <tbody>${list.map(u => `
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:12px 10px;">
+              <div style="font-weight:500; color:var(--text-primary);">${u.display_name}</div>
+              <div style="font-size:12px; color:var(--text-muted);">@${u.username}${u.email ? ' · ' + u.email : ''}</div>
+            </td>
+            <td style="padding:12px 10px;"><span style="color:${roleColors[u.role] || 'var(--text-secondary)'}; font-size:13px;">${u.role}</span></td>
+            <td style="padding:12px 10px;"><span style="color:${u.is_active ? 'var(--green)' : 'var(--red)'}; font-size:13px;">${u.is_active ? '● Active' : '○ Disabled'}</span></td>
+            <td style="padding:12px 10px; color:var(--text-muted); font-size:13px;">${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}</td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`;
+  } catch (e) { console.error('loadUsers:', e); }
+}
+
+function showCreateUserModal() {
+  showModal(`
+    <h3 style="color:var(--text-primary); margin-bottom:20px;">👤 New User</h3>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Username *</label>
+        <input id="newUsername" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Display Name</label>
+        <input id="newDisplayName" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Password *</label>
+        <input id="newPassword" type="password" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Role</label>
+        <select id="newRole" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;">
+          <option value="member">Member</option>
+          <option value="team_lead">Team Lead</option>
+          <option value="org_admin">Org Admin</option>
+        </select></div>
+      <div id="newUserError" style="color:var(--red); font-size:13px; display:none;"></div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
+        <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Cancel</button>
+        <button onclick="createUser()" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">Create</button>
+      </div>
+    </div>
+  `);
+}
+
+async function createUser() {
+  const errDiv = document.getElementById('newUserError');
+  const username = document.getElementById('newUsername').value.trim();
+  const password = document.getElementById('newPassword').value;
+  if (!username || !password) { errDiv.textContent = 'Username and password required'; errDiv.style.display = 'block'; return; }
+  try {
+    const res = await fetch('/api/users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username, password,
+        display_name: document.getElementById('newDisplayName').value || username,
+        role: document.getElementById('newRole').value,
+      }),
+    });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error); }
+    closeModal(); loadUsers();
+  } catch (e) { errDiv.textContent = e.message; errDiv.style.display = 'block'; }
+}
+
+// ============== Audit ==============
+async function loadAudit() {
+  try {
+    const res = await fetch('/api/audit?limit=100');
+    if (res.status === 403) {
+      document.getElementById('auditList').innerHTML = '<div style="color:var(--text-muted); padding:40px; text-align:center;">🔒 Admin access required</div>';
+      return;
+    }
+    const list = await res.json();
+    const actionIcons = { login: '🔑', create_employee: '🤖', create_user: '👤', update_employee: '✏️', delete_employee: '🗑' };
+    document.getElementById('auditList').innerHTML = list.length ? `
+      <table style="width:100%; border-collapse:collapse;">
+        <thead><tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Time</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">User</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Action</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Detail</th>
+        </tr></thead>
+        <tbody>${list.map(l => `
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:10px; color:var(--text-muted); font-size:13px; white-space:nowrap;">${l.timestamp ? new Date(l.timestamp).toLocaleString() : '—'}</td>
+            <td style="padding:10px; color:var(--text-primary); font-size:13px;">${l.username || '—'}</td>
+            <td style="padding:10px; font-size:13px;">${actionIcons[l.action] || '📋'} ${l.action}</td>
+            <td style="padding:10px; color:var(--text-muted); font-size:12px;">${l.detail ? JSON.stringify(l.detail) : l.resource_type || '—'}</td>
+          </tr>
+        `).join('')}</tbody>
+      </table>` : '<div style="color:var(--text-muted); padding:40px; text-align:center;">No audit entries yet.</div>';
+  } catch (e) { console.error('loadAudit:', e); }
+}
+
+// ============== Panel Switch Hook ==============
+const _origSwitchPanel = typeof switchPanel === 'function' ? switchPanel : null;
 
 // ============== Auth ==============
 let currentUser = null;
