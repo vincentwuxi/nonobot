@@ -76,6 +76,35 @@ _sessions: SessionManager | None = None
 _agent_model: str = ""
 
 # ---------------------------------------------------------------------------
+# RBAC helpers
+# ---------------------------------------------------------------------------
+
+_ROLE_HIERARCHY = {
+    "superadmin": 5, "org_admin": 4, "team_lead": 3, "member": 2, "guest": 1
+}
+
+
+def require_role(request: Request, min_role: str = "org_admin") -> JSONResponse | None:
+    """Check if current user has at least `min_role`. Returns 403 response or None."""
+    user = getattr(request.state, "user", {})
+    user_level = _ROLE_HIERARCHY.get(user.get("role", ""), 0)
+    required_level = _ROLE_HIERARCHY.get(min_role, 99)
+    if user_level < required_level:
+        return JSONResponse({"error": "forbidden", "required_role": min_role}, status_code=403)
+    return None
+
+
+def _mask_ip(ip: str | None) -> str | None:
+    """Mask the last octet of an IP address for privacy."""
+    if not ip:
+        return None
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.{parts[2]}.***"
+    return ip[:len(ip)//2] + "***"  # IPv6 fallback
+
+
+# ---------------------------------------------------------------------------
 # REST API handlers
 # ---------------------------------------------------------------------------
 
@@ -701,9 +730,8 @@ async def api_users_list(request: Request) -> JSONResponse:
     from nanobot.db.models import User
     from sqlalchemy import select
 
-    user = getattr(request.state, "user", {})
-    if user.get("role") not in ("superadmin", "org_admin"):
-        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if err := require_role(request, "org_admin"):
+        return err
 
     async with get_db() as db:
         result = await db.execute(select(User).order_by(User.created_at.desc()))
@@ -712,6 +740,7 @@ async def api_users_list(request: Request) -> JSONResponse:
     return JSONResponse([{
         "id": u.id, "username": u.username, "display_name": u.display_name,
         "email": u.email, "role": u.role, "is_active": u.is_active,
+        "settings": u.settings or {},
         "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
         "created_at": u.created_at.isoformat() if u.created_at else None,
     } for u in users])
@@ -723,9 +752,8 @@ async def api_users_create(request: Request) -> JSONResponse:
     from nanobot.db.engine import get_db
     from nanobot.db.models import User
 
-    user = getattr(request.state, "user", {})
-    if user.get("role") not in ("superadmin", "org_admin"):
-        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if err := require_role(request, "org_admin"):
+        return err
 
     try:
         body = await request.json()
@@ -737,6 +765,12 @@ async def api_users_create(request: Request) -> JSONResponse:
     if not username or not password:
         return JSONResponse({"error": "username and password required"}, status_code=400)
 
+    # Build settings with quota defaults
+    user_settings = {
+        "daily_token_limit": body.get("daily_token_limit", 100000),
+        "monthly_token_limit": body.get("monthly_token_limit", 3000000),
+    }
+
     async with get_db() as db:
         new_user = User(
             username=username,
@@ -744,10 +778,61 @@ async def api_users_create(request: Request) -> JSONResponse:
             display_name=body.get("display_name", username),
             email=body.get("email"),
             role=body.get("role", "member"),
+            settings=user_settings,
         )
         db.add(new_user)
 
     return JSONResponse({"id": new_user.id, "username": new_user.username}, status_code=201)
+
+
+async def api_users_update(request: Request) -> JSONResponse:
+    """Update a user (admin only) — role, settings, quotas."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User, AuditLog
+    from sqlalchemy import select
+
+    if err := require_role(request, "org_admin"):
+        return err
+
+    user_id = request.path_params["id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    async with get_db() as db:
+        result = await db.execute(select(User).where(User.id == user_id))
+        target = result.scalar_one_or_none()
+        if not target:
+            return JSONResponse({"error": "not found"}, status_code=404)
+
+        if "role" in body:
+            target.role = body["role"]
+        if "is_active" in body:
+            target.is_active = body["is_active"]
+        if "display_name" in body:
+            target.display_name = body["display_name"]
+        if "email" in body:
+            target.email = body["email"]
+
+        # Update quota settings
+        settings = target.settings or {}
+        for key in ("daily_token_limit", "monthly_token_limit"):
+            if key in body:
+                settings[key] = body[key]
+        target.settings = settings
+
+        current_user = getattr(request.state, "user", {})
+        db.add(AuditLog(
+            user_id=current_user.get("sub"),
+            username=current_user.get("username"),
+            action="update_user",
+            resource_type="user",
+            resource_id=user_id,
+            detail={"changes": list(body.keys())},
+        ))
+
+    return JSONResponse({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -755,14 +840,13 @@ async def api_users_create(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 async def api_audit_logs(request: Request) -> JSONResponse:
-    """List recent audit logs (admin only)."""
+    """List recent audit logs (admin only). IPs are masked for privacy."""
     from nanobot.db.engine import get_db
     from nanobot.db.models import AuditLog
     from sqlalchemy import select
 
-    user = getattr(request.state, "user", {})
-    if user.get("role") not in ("superadmin", "org_admin"):
-        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if err := require_role(request, "org_admin"):
+        return err
 
     limit = int(request.query_params.get("limit", "50"))
     async with get_db() as db:
@@ -771,12 +855,124 @@ async def api_audit_logs(request: Request) -> JSONResponse:
         )
         logs = result.scalars().all()
 
+    # Sanitize: mask IP addresses, filter sensitive detail fields
+    def _sanitize_detail(detail: dict | None) -> dict | None:
+        if not detail:
+            return detail
+        return {k: v for k, v in detail.items()
+                if k not in ("password_hash", "old_password", "new_password", "secret")}
+
     return JSONResponse([{
         "id": l.id, "timestamp": l.timestamp.isoformat() if l.timestamp else None,
         "username": l.username, "action": l.action,
         "resource_type": l.resource_type, "resource_id": l.resource_id,
-        "detail": l.detail, "ip_address": l.ip_address,
+        "detail": _sanitize_detail(l.detail),
+        "ip_address": _mask_ip(l.ip_address),
     } for l in logs])
+
+
+# ---------------------------------------------------------------------------
+# Chat Session DB Persistence API
+# ---------------------------------------------------------------------------
+
+async def api_chat_sessions_list(request: Request) -> JSONResponse:
+    """List chat sessions (DB-backed) for the current user."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import ChatSession
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    user_id = user.get("sub")
+    employee_id = request.query_params.get("employee_id")
+
+    async with get_db() as db:
+        query = select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(50)
+        # Admin sees all, others see only their own
+        if user.get("role") not in ("superadmin", "org_admin"):
+            query = query.where(ChatSession.user_id == user_id)
+        if employee_id:
+            query = query.where(ChatSession.employee_id == employee_id)
+        result = await db.execute(query)
+        sessions = result.scalars().all()
+
+    return JSONResponse([{
+        "id": s.id, "key": s.key, "title": s.title or "Untitled",
+        "employee_id": s.employee_id, "channel": s.channel,
+        "message_count": s.message_count, "total_tokens": s.total_tokens,
+        "is_archived": s.is_archived,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+    } for s in sessions])
+
+
+async def api_chat_sessions_create(request: Request) -> JSONResponse:
+    """Create/update a chat session record."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import ChatSession
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+
+    session_key = body.get("key", "")
+    if not session_key:
+        return JSONResponse({"error": "key required"}, status_code=400)
+
+    async with get_db() as db:
+        result = await db.execute(select(ChatSession).where(ChatSession.key == session_key))
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            if "title" in body: existing.title = body["title"]
+            if "message_count" in body: existing.message_count = body["message_count"]
+            if "total_tokens" in body: existing.total_tokens = body["total_tokens"]
+            if "is_archived" in body: existing.is_archived = body["is_archived"]
+        else:
+            session = ChatSession(
+                key=session_key,
+                user_id=user.get("sub"),
+                employee_id=body.get("employee_id"),
+                channel=body.get("channel", "web"),
+                title=body.get("title", "New Chat"),
+            )
+            db.add(session)
+
+    return JSONResponse({"ok": True})
+
+
+async def api_quota_check(request: Request) -> JSONResponse:
+    """Check current user's token quota usage."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import User
+    from sqlalchemy import select
+
+    user_info = getattr(request.state, "user", {})
+    user_id = user_info.get("sub")
+    if not user_id:
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+
+    async with get_db() as db:
+        result = await db.execute(select(User).where(User.id == user_id))
+        u = result.scalar_one_or_none()
+        if not u:
+            return JSONResponse({"error": "user not found"}, status_code=404)
+
+    settings = u.settings or {}
+    daily_limit = settings.get("daily_token_limit", 100000)
+    monthly_limit = settings.get("monthly_token_limit", 3000000)
+    daily_used = settings.get("daily_tokens_used", 0)
+    monthly_used = settings.get("monthly_tokens_used", 0)
+
+    return JSONResponse({
+        "daily_limit": daily_limit, "daily_used": daily_used,
+        "daily_remaining": max(0, daily_limit - daily_used),
+        "monthly_limit": monthly_limit, "monthly_used": monthly_used,
+        "monthly_remaining": max(0, monthly_limit - monthly_used),
+        "is_over_quota": daily_used >= daily_limit or monthly_used >= monthly_limit,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -947,8 +1143,14 @@ def create_app(
         # Users API (admin)
         Route("/api/users", api_users_list, methods=["GET"]),
         Route("/api/users", api_users_create, methods=["POST"]),
+        Route("/api/users/{id}", api_users_update, methods=["PUT", "PATCH"]),
         # Audit API
         Route("/api/audit", api_audit_logs, methods=["GET"]),
+        # Chat Sessions (DB)
+        Route("/api/chat-sessions", api_chat_sessions_list, methods=["GET"]),
+        Route("/api/chat-sessions", api_chat_sessions_create, methods=["POST"]),
+        # Quota
+        Route("/api/quota", api_quota_check, methods=["GET"]),
         # WebSocket
         WebSocketRoute("/ws", ws_chat),
         # Static files

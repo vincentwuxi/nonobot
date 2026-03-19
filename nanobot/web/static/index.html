@@ -558,7 +558,8 @@ body {
       <div class="nav-item" data-panel="files" onclick="switchPanel('files')">
         <span class="icon">📁</span><span>Files</span>
       </div>
-      <div class="nav-divider"></div>
+      <div class="nav-divider" id="adminSection">
+      </div>
       <div class="nav-label">Admin</div>
       <div class="nav-item" data-panel="employees" onclick="switchPanel('employees')">
         <span class="icon">🤖</span><span>Employees</span>
@@ -1502,8 +1503,9 @@ async function loadUsers() {
         <thead><tr style="border-bottom:1px solid var(--border);">
           <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">User</th>
           <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Role</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Quota</th>
           <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Status</th>
-          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Last Login</th>
+          <th style="text-align:left; padding:10px; color:var(--text-muted); font-size:12px; font-weight:500;">Actions</th>
         </tr></thead>
         <tbody>${list.map(u => `
           <tr style="border-bottom:1px solid var(--border);">
@@ -1512,12 +1514,65 @@ async function loadUsers() {
               <div style="font-size:12px; color:var(--text-muted);">@${u.username}${u.email ? ' · ' + u.email : ''}</div>
             </td>
             <td style="padding:12px 10px;"><span style="color:${roleColors[u.role] || 'var(--text-secondary)'}; font-size:13px;">${u.role}</span></td>
+            <td style="padding:12px 10px; font-size:11px; color:var(--text-muted);">
+              D: ${((u.settings?.daily_token_limit) || 100000).toLocaleString()}<br>
+              M: ${((u.settings?.monthly_token_limit) || 3000000).toLocaleString()}
+            </td>
             <td style="padding:12px 10px;"><span style="color:${u.is_active ? 'var(--green)' : 'var(--red)'}; font-size:13px;">${u.is_active ? '● Active' : '○ Disabled'}</span></td>
-            <td style="padding:12px 10px; color:var(--text-muted); font-size:13px;">${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}</td>
+            <td style="padding:12px 10px;">
+              <button onclick="editUser('${u.id}')" style="padding:4px 10px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer; font-size:12px;">✏️ Edit</button>
+            </td>
           </tr>
         `).join('')}</tbody>
       </table>`;
   } catch (e) { console.error('loadUsers:', e); }
+}
+
+async function editUser(id) {
+  const res = await fetch('/api/users');
+  const list = await res.json();
+  const u = list.find(x => x.id === id);
+  if (!u) return;
+  const s = u.settings || {};
+  showModal(`
+    <h3 style="color:var(--text-primary); margin-bottom:20px;">✏️ Edit: ${u.display_name}</h3>
+    <div style="display:flex; flex-direction:column; gap:14px;">
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Role</label>
+        <select id="editUserRole" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;">
+          <option value="guest" ${u.role==='guest'?'selected':''}>Guest</option>
+          <option value="member" ${u.role==='member'?'selected':''}>Member</option>
+          <option value="team_lead" ${u.role==='team_lead'?'selected':''}>Team Lead</option>
+          <option value="org_admin" ${u.role==='org_admin'?'selected':''}>Org Admin</option>
+          <option value="superadmin" ${u.role==='superadmin'?'selected':''}>Superadmin</option>
+        </select></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Status</label>
+        <select id="editUserActive" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;">
+          <option value="true" ${u.is_active?'selected':''}>Active</option>
+          <option value="false" ${!u.is_active?'selected':''}>Disabled</option>
+        </select></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Daily Token Limit</label>
+        <input id="editUserDailyLimit" type="number" value="${s.daily_token_limit || 100000}" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div><label style="display:block; color:var(--text-secondary); font-size:12px; margin-bottom:4px;">Monthly Token Limit</label>
+        <input id="editUserMonthlyLimit" type="number" value="${s.monthly_token_limit || 3000000}" style="width:100%; padding:8px 12px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-size:14px;"></div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:8px;">
+        <button onclick="closeModal()" style="padding:8px 16px; background:var(--bg-glass); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-secondary); cursor:pointer;">Cancel</button>
+        <button onclick="saveUser('${id}')" style="padding:8px 16px; background:var(--accent); border:none; border-radius:var(--radius-sm); color:white; cursor:pointer; font-weight:600;">Save</button>
+      </div>
+    </div>
+  `);
+}
+
+async function saveUser(id) {
+  await fetch(`/api/users/${id}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      role: document.getElementById('editUserRole').value,
+      is_active: document.getElementById('editUserActive').value === 'true',
+      daily_token_limit: parseInt(document.getElementById('editUserDailyLimit').value) || 100000,
+      monthly_token_limit: parseInt(document.getElementById('editUserMonthlyLimit').value) || 3000000,
+    }),
+  });
+  closeModal(); loadUsers();
 }
 
 function showCreateUserModal() {
@@ -1629,6 +1684,38 @@ async function loadSettings() {
   try {
     const res = await fetch('/api/settings');
     const data = await res.json();
+
+    // Load quota info
+    let quotaHtml = '';
+    try {
+      const qRes = await fetch('/api/quota');
+      const quota = await qRes.json();
+      const dailyPct = quota.daily_limit > 0 ? Math.min(100, Math.round((quota.daily_used / quota.daily_limit) * 100)) : 0;
+      const monthlyPct = quota.monthly_limit > 0 ? Math.min(100, Math.round((quota.monthly_used / quota.monthly_limit) * 100)) : 0;
+      quotaHtml = `
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+          <div style="font-weight:600; color:var(--text-primary); margin-bottom:12px;">📊 Token Quota</div>
+          <div style="margin-bottom:8px;">
+            <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); margin-bottom:4px;">
+              <span>Daily: ${(quota.daily_used || 0).toLocaleString()} / ${(quota.daily_limit || 0).toLocaleString()}</span>
+              <span>${dailyPct}%</span>
+            </div>
+            <div style="height:6px; background:var(--bg-glass); border-radius:3px; overflow:hidden;">
+              <div style="height:100%; width:${dailyPct}%; background:${dailyPct > 80 ? 'var(--red)' : 'var(--accent)'}; border-radius:3px; transition:width 0.3s;"></div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); margin-bottom:4px;">
+              <span>Monthly: ${(quota.monthly_used || 0).toLocaleString()} / ${(quota.monthly_limit || 0).toLocaleString()}</span>
+              <span>${monthlyPct}%</span>
+            </div>
+            <div style="height:6px; background:var(--bg-glass); border-radius:3px; overflow:hidden;">
+              <div style="height:100%; width:${monthlyPct}%; background:${monthlyPct > 80 ? 'var(--red)' : 'var(--accent-2)'}; border-radius:3px; transition:width 0.3s;"></div>
+            </div>
+          </div>
+        </div>`;
+    } catch(e) { /* quota not available */ }
+
     document.getElementById('settingsInfo').innerHTML = `
       <div style="display:grid; grid-template-columns:120px 1fr; gap:8px;">
         <span style="color:var(--text-muted);">Username:</span><span style="color:var(--text-primary);">${data.username || '—'}</span>
@@ -1637,6 +1724,7 @@ async function loadSettings() {
         <span style="color:var(--text-muted);">Version:</span><span style="color:var(--text-primary);">${data.version || '—'}</span>
         <span style="color:var(--text-muted);">Sandbox:</span><span style="color:var(--text-primary); word-break:break-all; font-size:12px;">${data.sandbox_path || '—'}</span>
       </div>
+      ${quotaHtml}
     `;
   } catch (e) { console.error('loadSettings:', e); }
 }
@@ -1645,6 +1733,7 @@ const _origSwitchPanel = typeof switchPanel === 'function' ? switchPanel : null;
 
 // ============== Auth ==============
 let currentUser = null;
+let _currentUserRole = 'member';
 
 async function handleLogin(e) {
   e.preventDefault();
@@ -1670,6 +1759,7 @@ async function handleLogin(e) {
       return;
     }
     currentUser = data.user;
+    _currentUserRole = (data.user && data.user.role) || 'member';
     showApp();
   } catch (err) {
     errDiv.textContent = 'Connection failed';
@@ -1691,6 +1781,27 @@ async function handleLogout() {
 function showApp() {
   document.getElementById('loginPage').style.display = 'none';
   document.getElementById('app').style.display = '';
+
+  // RBAC: hide admin section for non-admin users
+  const userRole = _currentUserRole || 'member';
+  const roleLevel = { superadmin: 5, org_admin: 4, team_lead: 3, member: 2, guest: 1 };
+  const level = roleLevel[userRole] || 0;
+  const adminItems = ['adminSection'];
+  const adminNavItems = document.querySelectorAll('[data-panel="employees"],[data-panel="users"],[data-panel="audit"]');
+  const adminDivider = document.getElementById('adminSection');
+  const adminLabel = adminDivider?.nextElementSibling;
+  if (level < 3) {
+    // Hide admin section for member/guest
+    if (adminDivider) adminDivider.style.display = 'none';
+    if (adminLabel) adminLabel.style.display = 'none';
+    adminNavItems.forEach(el => el.style.display = 'none');
+  } else {
+    // team_lead can view but we show it
+    if (adminDivider) adminDivider.style.display = '';
+    if (adminLabel) adminLabel.style.display = '';
+    adminNavItems.forEach(el => el.style.display = '');
+  }
+
   initApp();
 }
 
@@ -1749,6 +1860,7 @@ async function initApp() {
     const res = await fetch('/api/auth/me');
     if (res.ok) {
       currentUser = await res.json();
+      _currentUserRole = (currentUser && currentUser.role) || 'member';
       showApp();
     } else {
       document.getElementById('loginPage').style.display = 'flex';
