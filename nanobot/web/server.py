@@ -1436,6 +1436,48 @@ async def kb_get_content(request: Request) -> JSONResponse:
     })
 
 
+async def kb_search(request: Request) -> JSONResponse:
+    """Search across documents in a knowledge base."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import KnowledgeDocument
+    from sqlalchemy import select
+
+    kb_id = request.path_params["id"]
+    query = request.query_params.get("q", "").strip().lower()
+
+    if not query:
+        return JSONResponse({"results": [], "query": ""})
+
+    async with get_db() as db:
+        result = await db.execute(
+            select(KnowledgeDocument).where(KnowledgeDocument.kb_id == kb_id).order_by(KnowledgeDocument.created_at)
+        )
+        docs = result.scalars().all()
+
+    results = []
+    for doc in docs:
+        if not doc.content:
+            continue
+        lines = doc.content.split("\n")
+        for i, line in enumerate(lines):
+            if query in line.lower():
+                # Include context: 1 line before and after
+                start = max(0, i - 1)
+                end = min(len(lines), i + 2)
+                snippet = "\n".join(lines[start:end])
+                results.append({
+                    "filename": doc.filename,
+                    "line_number": i + 1,
+                    "snippet": snippet[:300],
+                })
+                if len(results) >= 20:
+                    break
+        if len(results) >= 20:
+            break
+
+    return JSONResponse({"results": results, "query": query, "count": len(results)})
+
+
 # ---------------------------------------------------------------------------
 # Employee Memory Management
 # ---------------------------------------------------------------------------
@@ -1829,6 +1871,7 @@ def create_app(
         Route("/api/knowledge-bases/{id}/documents", kb_upload_document, methods=["POST"]),
         Route("/api/knowledge-bases/{id}/documents/{doc_id}", kb_delete_document, methods=["DELETE"]),
         Route("/api/knowledge-bases/{id}/content", kb_get_content, methods=["GET"]),
+        Route("/api/knowledge-bases/{id}/search", kb_search, methods=["GET"]),
         # External API (v1) — authenticated via API key
         Route("/api/v1/chat", api_v1_chat, methods=["POST"]),
         Route("/api/v1/employees", api_v1_employees_list, methods=["GET"]),

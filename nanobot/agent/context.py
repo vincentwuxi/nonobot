@@ -24,8 +24,8 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills."""
+    def build_system_prompt(self, skill_names: list[str] | None = None, knowledge_context: str | None = None) -> str:
+        """Build the system prompt from identity, bootstrap files, memory, knowledge, and skills."""
         parts = [self._get_identity()]
 
         bootstrap = self._load_bootstrap_files()
@@ -35,6 +35,10 @@ class ContextBuilder:
         memory = self.memory.get_memory_context()
         if memory:
             parts.append(f"# Memory\n\n{memory}")
+
+        # Knowledge Base injection (L1: direct content injection)
+        if knowledge_context:
+            parts.append(f"# Knowledge Base\n\nThe following reference documents are available to you. Use them to answer questions accurately.\n\n{knowledge_context}")
 
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -125,6 +129,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        knowledge_context: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         runtime_ctx = self._build_runtime_context(channel, chat_id)
@@ -138,7 +143,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, knowledge_context=knowledge_context)},
             *history,
             {"role": "user", "content": merged},
         ]
