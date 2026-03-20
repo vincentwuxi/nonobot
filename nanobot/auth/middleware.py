@@ -16,11 +16,13 @@ _PUBLIC_PATHS = frozenset({
     "/api/auth/refresh",
     "/login",
     "/api/status",
+    "/health",
 })
 
 _PUBLIC_PREFIXES = (
     "/static/",
     "/api/v1/",  # External API — authenticated via API key inside handlers
+    "/health/",  # Health check sub-endpoints (e.g. /health/db)
 )
 
 

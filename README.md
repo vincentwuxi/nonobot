@@ -46,6 +46,9 @@
 | 📋 Task Engine | Task CRUD, employee assignment, priority, agent execution |
 | 🎯 Employee Templates | 5 pre-built roles (HR, IT, CS, Analyst, Writer) |
 | 📥 Conversation Export | Download chat as Markdown |
+| 🏗️ **Layered Architecture** | Repository + Service + Controller pattern (Phase 0-2) |
+| 🐳 **Docker Ready** | Multi-stage Dockerfile, docker-compose, Nginx reverse proxy |
+| 🩺 **Health Checks** | `/health` (liveness) + `/health/db` (readiness) |
 
 ### 🚀 Quick Start (Enterprise Mode)
 
@@ -1354,41 +1357,58 @@ The agent can also manage this file itself — ask it to "add a periodic task" a
 ## 🐳 Docker
 
 > [!TIP]
-> The `-v ~/.nanobot:/root/.nanobot` flag mounts your local config directory into the container, so your config and workspace persist across container restarts.
+> This project includes a production-ready `Dockerfile` and `docker-compose.yml` with health checks and optional Nginx reverse proxy.
 
-### Docker Compose
-
-```bash
-docker compose run --rm nanobot-cli onboard   # first-time setup
-vim ~/.nanobot/config.json                     # add API keys
-docker compose up -d nanobot-gateway           # start gateway
-```
+### Quick Start (Docker Compose)
 
 ```bash
-docker compose run --rm nanobot-cli agent -m "Hello!"   # run CLI
-docker compose logs -f nanobot-gateway                   # view logs
-docker compose down                                      # stop
+# 1. Configure environment
+cp .env.example .env
+vim .env   # Add your LLM API key
+
+# 2. Start
+docker compose up -d
+
+# 3. Verify
+curl http://localhost:18790/health
+# {"status":"ok","version":"1.0.0"}
+
+# 4. Open web console
+open http://localhost:18790
+# Login: admin / admin
 ```
 
-### Docker
+### Management
+
+```bash
+docker compose logs -f          # Follow logs
+docker compose restart nonobot  # Restart after config changes
+docker compose down             # Stop all
+```
+
+### Health Check Endpoints
+
+| Endpoint | Type | Description |
+|----------|------|-------------|
+| `GET /health` | Liveness | Server is up and responding |
+| `GET /health/db` | Readiness | Database is connected |
+
+### Docker Build (Manual)
 
 ```bash
 # Build the image
-docker build -t nanobot .
+docker build -t nonobot .
 
-# Initialize config (first time only)
-docker run -v ~/.nanobot:/root/.nanobot --rm nanobot onboard
+# Run gateway
+docker run -v ~/.nanobot:/home/nonobot/.nanobot -p 18790:18790 nonobot
 
-# Edit config on host to add API keys
-vim ~/.nanobot/config.json
-
-# Run gateway (connects to enabled channels, e.g. Telegram/Discord/Mochat)
-docker run -v ~/.nanobot:/root/.nanobot -p 18790:18790 nanobot gateway
-
-# Or run a single command
-docker run -v ~/.nanobot:/root/.nanobot --rm nanobot agent -m "Hello!"
-docker run -v ~/.nanobot:/root/.nanobot --rm nanobot status
+# Run a single command
+docker run -v ~/.nanobot:/home/nonobot/.nanobot --rm nonobot agent -m "Hello!"
 ```
+
+### Nginx Reverse Proxy (Optional)
+
+Uncomment the `nginx` service in `docker-compose.yml` and mount your SSL certificates. See `docker/nginx.conf` for the full configuration (TLS termination, WebSocket proxy, static caching, security headers).
 
 ## 🐧 Linux Service
 
@@ -1454,6 +1474,14 @@ nanobot/
 │   ├── skills.py   #    Skills loader
 │   ├── subagent.py #    Background task execution
 │   └── tools/      #    Built-in tools (incl. spawn)
+├── repositories/   # 📦 Data access layer (BaseRepository + domain repos)
+├── services/       # ⚙️ Business logic layer (domain services)
+├── web/            # 🌐 Web server
+│   ├── server.py   #    App factory + route registration
+│   ├── shared.py   #    Shared infrastructure (globals, RBAC)
+│   └── api/        #    Domain API controllers (12 modules)
+├── db/             # 🗄️ Database (SQLAlchemy models + engine)
+├── auth/           # 🔐 JWT auth + middleware
 ├── skills/         # 🎯 Bundled skills (github, weather, tmux...)
 ├── channels/       # 📱 Chat channel integrations (supports plugins)
 ├── bus/            # 🚌 Message routing

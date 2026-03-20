@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] — 2026-03-20
+
+### 🏗️ Architecture Refactoring — Three-Phase Evolution
+
+A major internal refactoring to improve code organization, maintainability, and deployment readiness. All 20 API endpoints verified passing after each phase.
+
+#### Phase 0 — God File Elimination
+- **Server refactoring** — `server.py` reduced from 2,363 lines to 227 lines (-90%)
+- **Domain modules** — Split into 12 domain API modules under `web/api/`
+- **Shared infrastructure** — `web/shared.py` for ConnectionManager, globals, RBAC helpers
+
+#### Phase 1 — Service Layer + Repository Pattern
+- **Repository layer** — 6 files (390 lines): Generic `BaseRepository[T]` with CRUD operations + domain-specific repositories (`employee_repo`, `user_repo`, `task_repo`, `knowledge_repo`, `audit_repo`)
+- **Service layer** — 5 files (857 lines): Business logic encapsulation (`EmployeeService`, `UserService`, `TaskService`, `KnowledgeService`, `StatsService`)
+- **API handler slimming** — Average 60% code reduction (e.g. `employees.py` 282→109, `tasks.py` 229→76, `knowledge.py` 290→95)
+- **Separation of concerns** — Controllers only parse requests, call services, and return responses
+
+#### Phase 2 — Containerization + Health Checks
+- **Multi-stage Dockerfile** — Builder → runtime slim image with non-root user
+- **docker-compose.yml** — Single-service orchestration with optional Nginx reverse proxy
+- **`.env.example`** — Environment variable template (LLM keys, DB URL, JWT secret)
+- **Nginx config** — TLS termination, WebSocket proxy, static asset caching, security headers
+- **Health check endpoints** — `GET /health` (liveness) + `GET /health/db` (readiness with DB connectivity check)
+- **Auth middleware update** — Health endpoints added to public paths (no authentication required)
+
+
 ## [1.0.0] — 2026-03-19
 
 ### 🎉 Enterprise Digital Employee Platform — First Release

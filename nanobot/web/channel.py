@@ -48,7 +48,7 @@ class WebChannel(BaseChannel):
         Final messages are streamed chunk-by-chunk for typewriter effect.
         Progress/tool_hint messages are sent immediately.
         """
-        from nanobot.web.server import manager
+        from nanobot.web.shared import manager
 
         is_progress = msg.metadata.get("_progress", False)
         is_tool_hint = msg.metadata.get("_tool_hint", False)
