@@ -1053,7 +1053,7 @@ async def api_stats_trends(request: Request) -> JSONResponse:
     """Return daily trends for dashboard charts (last N days)."""
     from nanobot.db.engine import get_db
     from nanobot.db.models import AuditLog, ChatFeedback
-    from sqlalchemy import select, func, cast, Date
+    from sqlalchemy import select, func, case
     from datetime import timedelta
 
     days = int(request.query_params.get("days", "7"))
@@ -1061,28 +1061,30 @@ async def api_stats_trends(request: Request) -> JSONResponse:
     cutoff = datetime.utcnow() - timedelta(days=days)
 
     async with get_db() as db:
-        # Activity trends by day
+        # Activity trends by day — use func.date() for SQLite compatibility
         result = await db.execute(
             select(
-                cast(AuditLog.timestamp, Date).label("day"),
+                func.date(AuditLog.timestamp).label("day"),
                 func.count().label("count"),
             )
+            .where(AuditLog.timestamp.isnot(None))
             .where(AuditLog.timestamp >= cutoff)
-            .group_by("day")
-            .order_by("day")
+            .group_by(func.date(AuditLog.timestamp))
+            .order_by(func.date(AuditLog.timestamp))
         )
         activity_rows = result.all()
 
-        # Feedback trends by day
+        # Feedback trends by day — use func.date() for SQLite compatibility
         fb_result = await db.execute(
             select(
-                cast(ChatFeedback.created_at, Date).label("day"),
+                func.date(ChatFeedback.created_at).label("day"),
                 func.count().label("count"),
-                func.sum(func.case((ChatFeedback.rating > 0, 1), else_=0)).label("positive"),
+                func.sum(case((ChatFeedback.rating > 0, 1), else_=0)).label("positive"),
             )
+            .where(ChatFeedback.created_at.isnot(None))
             .where(ChatFeedback.created_at >= cutoff)
-            .group_by("day")
-            .order_by("day")
+            .group_by(func.date(ChatFeedback.created_at))
+            .order_by(func.date(ChatFeedback.created_at))
         )
         fb_rows = fb_result.all()
 
