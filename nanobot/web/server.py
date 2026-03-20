@@ -1116,27 +1116,39 @@ async def api_tasks_list(request: Request) -> JSONResponse:
 async def api_tasks_create(request: Request) -> JSONResponse:
     """Create a new task."""
     from nanobot.db.engine import get_db
-    from nanobot.db.models import EmployeeTask
+    from nanobot.db.models import EmployeeTask, Employee
+    from sqlalchemy import select
 
     data = await request.json()
     title = data.get("title", "").strip()
     if not title:
         return JSONResponse({"error": "title required"}, status_code=400)
 
+    employee_id = data.get("employee_id")
+    if employee_id:
+        employee_id = str(employee_id)
+        async with get_db() as db:
+            result = await db.execute(select(Employee).where(Employee.id == employee_id))
+            if not result.scalar_one_or_none():
+                return JSONResponse({"error": "employee not found"}, status_code=404)
+
     user = getattr(request.state, "user", {})
-    task = EmployeeTask(
-        title=title,
-        description=data.get("description", ""),
-        employee_id=data.get("employee_id") or None,
-        assigned_by=user.get("user_id"),
-        priority=data.get("priority", "medium"),
-        schedule=data.get("schedule") or None,
-    )
-    async with get_db() as db:
-        db.add(task)
-        await db.commit()
-        await db.refresh(task)
-    return JSONResponse({"id": task.id, "status": "created"}, status_code=201)
+    try:
+        task = EmployeeTask(
+            title=title,
+            description=data.get("description", ""),
+            employee_id=employee_id or None,
+            assigned_by=user.get("user_id"),
+            priority=data.get("priority", "medium"),
+            schedule=data.get("schedule") or None,
+        )
+        async with get_db() as db:
+            db.add(task)
+            await db.commit()
+            await db.refresh(task)
+        return JSONResponse({"id": task.id, "status": "created"}, status_code=201)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 async def api_task_detail(request: Request) -> JSONResponse:
