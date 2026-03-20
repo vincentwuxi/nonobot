@@ -1049,6 +1049,88 @@ async def api_stats(request: Request) -> JSONResponse:
     })
 
 
+async def api_stats_trends(request: Request) -> JSONResponse:
+    """Return daily trends for dashboard charts (last N days)."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import AuditLog, ChatFeedback
+    from sqlalchemy import select, func, cast, Date
+    from datetime import timedelta
+
+    days = int(request.query_params.get("days", "7"))
+    days = min(days, 90)  # cap at 90
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    async with get_db() as db:
+        # Activity trends by day
+        result = await db.execute(
+            select(
+                cast(AuditLog.timestamp, Date).label("day"),
+                func.count().label("count"),
+            )
+            .where(AuditLog.timestamp >= cutoff)
+            .group_by("day")
+            .order_by("day")
+        )
+        activity_rows = result.all()
+
+        # Feedback trends by day
+        fb_result = await db.execute(
+            select(
+                cast(ChatFeedback.created_at, Date).label("day"),
+                func.count().label("count"),
+                func.sum(func.case((ChatFeedback.rating > 0, 1), else_=0)).label("positive"),
+            )
+            .where(ChatFeedback.created_at >= cutoff)
+            .group_by("day")
+            .order_by("day")
+        )
+        fb_rows = fb_result.all()
+
+    # Build date series
+    dates = []
+    current = (datetime.utcnow() - timedelta(days=days - 1)).date()
+    end = datetime.utcnow().date()
+    while current <= end:
+        dates.append(current.isoformat())
+        current += timedelta(days=1)
+
+    # Map data
+    activity_map = {str(r[0]): r[1] for r in activity_rows}
+    fb_map = {str(r[0]): {"total": r[1], "positive": r[2] or 0} for r in fb_rows}
+
+    return JSONResponse({
+        "dates": dates,
+        "activity": [activity_map.get(d, 0) for d in dates],
+        "feedback": [fb_map.get(d, {}).get("total", 0) for d in dates],
+        "satisfaction": [
+            round(fb_map[d]["positive"] / fb_map[d]["total"] * 100) if d in fb_map and fb_map[d]["total"] > 0 else 0
+            for d in dates
+        ],
+    })
+
+
+async def api_task_approve(request: Request) -> JSONResponse:
+    """Approve a pending task."""
+    task_id = request.path_params["id"]
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import EmployeeTask
+    from sqlalchemy import select
+
+    user = getattr(request.state, "user", {})
+    async with get_db() as db:
+        result = await db.execute(select(EmployeeTask).where(EmployeeTask.id == task_id))
+        task = result.scalar_one_or_none()
+        if not task:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        if task.status != "pending":
+            return JSONResponse({"error": "task not in pending state"}, status_code=400)
+        task.status = "approved"
+        task.result = f"Approved by {user.get('username', 'system')}"
+        await db.commit()
+
+    return JSONResponse({"status": "approved", "id": task_id})
+
+
 # ---------------------------------------------------------------------------
 # Chat Feedback API
 # ---------------------------------------------------------------------------
@@ -1075,6 +1157,119 @@ async def api_feedback(request: Request) -> JSONResponse:
         await db.commit()
 
     return JSONResponse({"status": "ok", "id": fb.id})
+
+
+# ---------------------------------------------------------------------------
+# Conversation History API
+# ---------------------------------------------------------------------------
+
+async def api_conversations_list(request: Request) -> JSONResponse:
+    """List all conversations with optional search."""
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import ChatSession
+    from sqlalchemy import select
+
+    q = request.query_params.get("q", "").strip()
+    async with get_db() as db:
+        stmt = select(ChatSession).order_by(ChatSession.updated_at.desc()).limit(50)
+        if q:
+            stmt = stmt.where(ChatSession.title.ilike(f"%{q}%"))
+        result = await db.execute(stmt)
+        sessions = result.scalars().all()
+
+    items = []
+    for s in sessions:
+        items.append({
+            "id": s.id,
+            "key": s.key,
+            "title": s.title or s.key,
+            "message_count": s.message_count or 0,
+            "total_tokens": s.total_tokens or 0,
+            "employee_id": s.employee_id,
+            "channel": s.channel or "web",
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        })
+    return JSONResponse(items)
+
+
+async def api_conversations_messages(request: Request) -> JSONResponse:
+    """Get messages for a specific conversation."""
+    conv_id = request.path_params["id"]
+
+    # Try to load from SessionManager first (in-memory cache)
+    if _sessions:
+        # Use the conversation key to find the session
+        from nanobot.db.engine import get_db
+        from nanobot.db.models import ChatSession
+        from sqlalchemy import select
+
+        async with get_db() as db:
+            result = await db.execute(select(ChatSession).where(ChatSession.id == conv_id))
+            cs = result.scalar_one_or_none()
+            if not cs:
+                return JSONResponse({"error": "not found"}, status_code=404)
+
+        session = _sessions.get_or_create(cs.key)
+        messages = []
+        for m in session.messages:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role in ("user", "assistant") and content:
+                # Handle multimodal content
+                if isinstance(content, list):
+                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                    content = " ".join(text_parts) or "[multimodal]"
+                messages.append({
+                    "role": role,
+                    "content": content,
+                    "timestamp": m.get("timestamp"),
+                })
+        return JSONResponse(messages)
+
+    return JSONResponse([])
+
+
+async def api_conversations_delete(request: Request) -> JSONResponse:
+    """Delete a conversation."""
+    conv_id = request.path_params["id"]
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import ChatSession
+    from sqlalchemy import select
+
+    async with get_db() as db:
+        result = await db.execute(select(ChatSession).where(ChatSession.id == conv_id))
+        cs = result.scalar_one_or_none()
+        if not cs:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        # Clear from session manager
+        if _sessions:
+            _sessions.invalidate(cs.key)
+        await db.delete(cs)
+        await db.commit()
+    return JSONResponse({"status": "deleted"})
+
+
+async def api_conversations_rename(request: Request) -> JSONResponse:
+    """Rename a conversation."""
+    conv_id = request.path_params["id"]
+    data = await request.json()
+    title = data.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "title required"}, status_code=400)
+
+    from nanobot.db.engine import get_db
+    from nanobot.db.models import ChatSession
+    from sqlalchemy import select
+
+    async with get_db() as db:
+        result = await db.execute(select(ChatSession).where(ChatSession.id == conv_id))
+        cs = result.scalar_one_or_none()
+        if not cs:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        cs.title = title
+        await db.commit()
+    return JSONResponse({"status": "renamed"})
 
 
 # ---------------------------------------------------------------------------
@@ -2082,11 +2277,13 @@ def create_app(
         # API routes
         Route("/api/status", api_status),
         Route("/api/stats", api_stats, methods=["GET"]),
+        Route("/api/stats/trends", api_stats_trends, methods=["GET"]),
         Route("/api/feedback", api_feedback, methods=["POST"]),
         Route("/api/tasks", api_tasks_list, methods=["GET"]),
         Route("/api/tasks", api_tasks_create, methods=["POST"]),
         Route("/api/tasks/{id}", api_task_detail, methods=["GET", "PUT", "DELETE"]),
         Route("/api/tasks/{id}/execute", api_task_execute, methods=["POST"]),
+        Route("/api/tasks/{id}/approve", api_task_approve, methods=["POST"]),
         Route("/api/settings", api_settings_get, methods=["GET"]),
         Route("/api/sessions", api_sessions),
         Route("/api/sessions/{key:path}", api_session_detail, methods=["GET"]),
@@ -2114,6 +2311,11 @@ def create_app(
         # Chat Sessions (DB)
         Route("/api/chat-sessions", api_chat_sessions_list, methods=["GET"]),
         Route("/api/chat-sessions", api_chat_sessions_create, methods=["POST"]),
+        # Conversations
+        Route("/api/conversations", api_conversations_list, methods=["GET"]),
+        Route("/api/conversations/{id}/messages", api_conversations_messages, methods=["GET"]),
+        Route("/api/conversations/{id}", api_conversations_delete, methods=["DELETE"]),
+        Route("/api/conversations/{id}/rename", api_conversations_rename, methods=["PUT"]),
         # Quota
         Route("/api/quota", api_quota_check, methods=["GET"]),
         # API Keys
